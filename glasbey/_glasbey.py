@@ -22,7 +22,7 @@ def create_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
-):
+) -> List[str] | np.ndarray:
     if grid_space == "JCh":
         colors = jch_grid(
             grid_size=grid_size,
@@ -67,7 +67,7 @@ def extend_palette(
     palette,
     palette_size: int = 256,
     *,
-    grid_size: int | Tuple[int, int, int] = 64,
+    grid_size: int | Tuple[int, int, int] = 64,  # type: ignore
     as_hex: bool = True,
     grid_space: Literal["RGB", "JCh"] = "RGB",
     lightness_bounds: Optional[Tuple[float, float]] = None,
@@ -76,7 +76,7 @@ def extend_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
-):
+) -> List[str] | np.ndarray:
     try:
         palette = palette_to_sRGB1(palette)
     except:
@@ -108,9 +108,9 @@ def extend_palette(
     if grid_space == "JCh":
         colors = jch_grid(
             grid_size=grid_size,
-            lightness_bounds=lightness_bounds,
-            chroma_bounds=chroma_bounds,
-            hue_bounds=hue_bounds,
+            lightness_bounds=lightness_bounds,  # type: ignore
+            chroma_bounds=chroma_bounds,  # type: ignore
+            hue_bounds=hue_bounds,  # type: ignore
             output_colorspace="CAM02-UCS",
         )
     elif grid_space == "RGB":
@@ -157,7 +157,7 @@ def create_theme_palette(
     hue_bend_scale: float = 6.0,
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
-):
+) -> List[str] | List[Tuple[float, float, float]]:
     if palette_size == 1:
         return [base_color]
 
@@ -222,6 +222,8 @@ def create_block_palette(
     block_sizes: List[int],
     *,
     sort_block_sizes: bool = True,
+    grid_size: int | Tuple[int, int, int] = 64,  # type: ignore
+    grid_space: Literal["RGB", "JCh"] = "RGB",
     generated_color_lightness_bounds: Tuple[float, float] = (30.0, 60.0),
     generated_color_chroma_bounds: Tuple[float, float] = (60.0, 90.0),
     theme_lightness_bounds: Tuple[float, float] = (10.0, 90.0),
@@ -234,14 +236,14 @@ def create_block_palette(
     hue_bend_scale: float = 6.0,
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
-):
+) -> List[str] | List[Tuple[float, float, float]]:
     if sort_block_sizes:
         block_order = np.argsort(block_sizes)[::-1]
         block_sizes_for_generation = np.asarray(block_sizes)[block_order]
     else:
         block_sizes_for_generation = block_sizes
 
-    palette = []
+    palette: List[str] | List[Tuple[float, float, float]] = []  # type: ignore
     initial_color = create_palette(
         1,
         lightness_bounds=(
@@ -266,20 +268,34 @@ def create_block_palette(
         max_chroma_bend=max_chroma_bend,
         hue_bend_scale=hue_bend_scale,
         max_hue_bend=max_hue_bend,
+        as_hex=as_hex,
     )
-    palette.extend(block)
+    palette.extend(block)  # type: ignore
 
-    colors = rgb_grid(
-        grid_size=64,
-        output_colorspace="JCh",
-    )
-    colors = constrain_by_lightness_chroma_hue(
-        colors,
-        "JCh",
-        lightness_bounds=generated_color_lightness_bounds,
-        chroma_bounds=generated_color_chroma_bounds,
-        hue_bounds=(0, 360),
-    )
+    if grid_space == "JCh":
+        colors = jch_grid(
+            grid_size=grid_size,
+            lightness_bounds=generated_color_lightness_bounds,
+            chroma_bounds=generated_color_chroma_bounds,
+            output_colorspace="CAM02-UCS",
+        )
+    elif grid_space == "RGB":
+        colors = rgb_grid(
+            grid_size=grid_size,
+            output_colorspace="JCh",
+        )
+        colors = constrain_by_lightness_chroma_hue(
+            colors,
+            "JCh",
+            lightness_bounds=generated_color_lightness_bounds,
+            chroma_bounds=generated_color_chroma_bounds,
+            hue_bounds=(0, 360),
+        )
+    else:
+        raise ValueError(
+            f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
+        )
+
     distances = np.full(colors.shape[0], 1e9, dtype=np.float32, order="C")
 
     for block_size in block_sizes_for_generation[1:]:
@@ -301,23 +317,21 @@ def create_block_palette(
             max_chroma_bend=max_chroma_bend,
             hue_bend_scale=hue_bend_scale,
             max_hue_bend=max_hue_bend,
+            as_hex=as_hex,
         )
-        palette.extend(block)
+        palette.extend(block)  # type: ignore
 
     if sort_block_sizes:
         block_start_indices = np.hstack(
             ([0], np.cumsum(block_sizes_for_generation)[:-1])
         )
-        result = []
+        result: List[str] | List[Tuple[float, float, float]] = []  # type: ignore
 
         for i in np.argsort(block_order):
             size = block_sizes_for_generation[i]
             block = palette[block_start_indices[i] : block_start_indices[i] + size]
-            result.extend(block)
+            result.extend(block)  # type: ignore
     else:
         result = palette
 
-    if as_hex:
-        return [rgb2hex(color) for color in result]
-    else:
-        return result.to_list()
+    return result
