@@ -23,6 +23,58 @@ def create_palette(
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
 ) -> List[str] | np.ndarray:
+    """Create a categorical color palette with ``palette_size`` many colours using the Glasbey algorithm with the
+    given bounds on hue, chroma and lightness. This should generate a palette that maximizes the perceptual distances
+    between colours in the palette up to the constraints on hue, chroma and lightness, and the granularity of the
+    possible colour sampling grid.
+
+    Parameters
+    ----------
+    palette_size: int (default 256)
+        The number of colors the created palette should have.
+
+    grid_size: int or triple of int (default 64)
+        When generating a grid of colors that can be used for the platte this determines
+        the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
+        color space. A grid_size of 256 in RGB will generate all colors that can be represented in RGB. If a triple of
+        ints is given then it is the side lengths of cuboid sampling the grid color space. This can be useful if sampling
+        JCH space when you may want to sample more hues than chroma values, for example.
+
+    as_hex: bool (default True)
+        Whether to return the palette as hex-codes or RGB float triples.
+
+    grid_space: "RGB" or "JCh" (default RGB)
+        The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
+        however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
+        grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
+
+    lightness_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of lightness values for the colors to be used in the resulting palette.
+
+    chroma_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of chroma values for the colors to be used in the resulting palette.
+
+    hue_bounds: (float, float) (default (0, 360))
+        The upper and lower bounds of hue values for the colors to be used in the resulting palette.
+
+    red_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of red channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    green_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of green channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    blue_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of blue channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    Returns
+    -------
+    palette: List of hex-code string or array of shape (palette_size, 3)
+        The palette created, either as hex colors, or an array of floats of RGB values -- consumable by
+        most plotting libraries.
+    """
     if grid_space == "JCh":
         colors = jch_grid(
             grid_size=grid_size,
@@ -77,6 +129,64 @@ def extend_palette(
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
 ) -> List[str] | np.ndarray:
+    """Extend an existing categorical color palette to have ``palette_size`` many colors using the Glasbey algorithm.
+    This should generate a palette that maximizes the perceptual distances between colours in the palette up to the
+    constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. If the
+    existing platte is long enough (at least 4 colors), and no explicit bounds are specified, bounds on the
+    lightness, chroma and hue will be inferred from the existing colors so that the extended palette should match
+    thematically to some degree.
+
+    Parameters
+    ----------
+    palette: List of hex colors or array of floats of shape (n_colors, 3)
+        The palette to be extended, either specified as a list of hex string colors or an array of RGB float
+        triples such that the floats represent red, green and blue channels and are in the range 0 to 1.
+
+    palette_size: int (default 256)
+        The number of colors the created palette should have.
+
+    grid_size: int or triple of int (default 64)
+        When generating a grid of colors that can be used for the platte this determines
+        the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
+        color space. A grid_size of 256 in RGB will generate all colors that can be represented in RGB. If a triple of
+        ints is given then it is the side lengths of cuboid sampling the grid color space. This can be useful if sampling
+        JCH space when you may want to sample more hues than chroma values, for example.
+
+    as_hex: bool (default True)
+        Whether to return the palette as hex-codes or RGB float triples.
+
+    grid_space: "RGB" or "JCh" (default RGB)
+        The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
+        however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
+        grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
+
+    lightness_bounds: None or (float, float) (default None)
+        The upper and lower bounds of lightness values for the colors to be used in the resulting palette.
+
+    chroma_bounds: None or (float, float) (default None)
+        The upper and lower bounds of chroma values for the colors to be used in the resulting palette.
+
+    hue_bounds: None or (float, float) (default None)
+        The upper and lower bounds of hue values for the colors to be used in the resulting palette.
+
+    red_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of red channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    green_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of green channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    blue_bounds: (float, float) (default (0.0, 1.0))
+        The upper and lower bounds of blue channel values for the colors to be used in the resulting palette if sampling
+        the grid from RGB space.
+
+    Returns
+    -------
+    palette: List of hex-code string or array of shape (palette_size, 3)
+        The palette created, either as hex colors, or an array of floats of RGB values -- consumable by
+        most plotting libraries.
+    """
     try:
         palette = palette_to_sRGB1(palette)
     except:
@@ -158,6 +268,40 @@ def create_theme_palette(
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
 ) -> List[str] | List[Tuple[float, float, float]]:
+    """Create a color palette with a range of colors around a central theme color that vary smoothly in a range
+    of lightness, chroma and (to less of a degree) hue. The goal is to generate a smooth color palette that
+    provides some variation of colors while remaining relatively close to the base color. This is primarily for
+    use in the creation of block color palettes, but may be useful in its own right.
+
+    Parameters
+    ----------
+    base_color: hex str or triple of floats for RGB
+        The base color around which to build the theme palette.
+
+    palette_size: int (default 5)
+        The number of colors the created palette should have.
+
+    lightness_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of lightness values for the colors to be used in the resulting palette.
+
+    chroma_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of chroma values for the colors to be used in the resulting palette.
+
+    hue_bounds: (float, float) (default (0, 360))
+        The upper and lower bounds of hue values for the colors to be used in the resulting palette.
+
+    lightness_bend_scale: float (default 8.0)
+    max_lightness_bend: float (default 60.0)
+    chroma_bend_scale: float (default 6.0)
+    max_chroma_bend: float (default 60.0)
+    hue_bend_scale: float (default 6.0)
+    max_hue_bend: float (default 45.0)
+    as_hex: bool (default True)
+
+    Returns
+    -------
+
+    """
     if palette_size == 1:
         return [base_color]
 
