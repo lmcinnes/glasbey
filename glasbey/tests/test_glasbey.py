@@ -15,7 +15,7 @@ from typing import *
 
 
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
-@pytest.mark.parametrize("grid_space", ["RGB"])
+@pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 def test_create_palette_distances(grid_size, grid_space: Literal["RGB", "JCh"]):
     palette = create_palette(10, grid_size=grid_size, grid_space=grid_space)
 
@@ -34,7 +34,7 @@ def test_create_palette_distances(grid_size, grid_space: Literal["RGB", "JCh"]):
 
 
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
-@pytest.mark.parametrize("grid_space", ["RGB"])
+@pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 @pytest.mark.parametrize("palette_to_extend", ["tab10", "Accent", "Set1"])
 def test_extend_palette_distances(
     grid_size, grid_space: Literal["RGB", "JCh"], palette_to_extend: str
@@ -86,6 +86,7 @@ def test_theme_palette_distances_small():
     for i in range(4):
         assert 0.0 < np.linalg.norm(cam_palette[i] - cam_palette[i + 1]) <= 35.0
 
+
 def test_theme_palette_bounds():
     base_color = np.clip(np.random.random(3), 0.2, 0.8)
     palette = create_theme_palette(base_color)
@@ -95,15 +96,23 @@ def test_theme_palette_bounds():
 
     assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
     assert 8 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 80
-    assert 36 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+    assert (
+        36 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+        or 36 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+    )
 
-@pytest.mark.parametrize("block_sizes", [[5,5,3,2,2,1], [1,5,3,4,2], [9,9,12,16]])
+
+@pytest.mark.parametrize(
+    "block_sizes", [[5, 5, 3, 2, 2, 1], [1, 5, 3, 4, 2], [9, 9, 12, 16]]
+)
 @pytest.mark.parametrize("sort_block_sizes", [True, False])
 def test_block_palette_sizing(block_sizes, sort_block_sizes):
     pal = create_block_palette(block_sizes, sort_block_sizes=sort_block_sizes)
     assert len(pal) == sum(block_sizes)
 
-    for start, end in zip(np.hstack([[0], np.cumsum(block_sizes)]), np.cumsum(block_sizes)):
+    for start, end in zip(
+        np.hstack([[0], np.cumsum(block_sizes)]), np.cumsum(block_sizes)
+    ):
         rgb_palette = np.asarray([to_rgb(color) for color in pal[start:end]])
         cam_palette = cspace_convert(rgb_palette, "sRGB1", "CAM02-UCS")
 

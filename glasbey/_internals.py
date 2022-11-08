@@ -1,3 +1,6 @@
+# MIT License
+# Leland McInnes, Sergey Alexandrov
+
 import numpy as np
 import numba
 

@@ -1,3 +1,6 @@
+# MIT License
+# Leland McInnes, Sergey Alexandrov
+
 import numpy as np
 
 from colorspacious import cspace_convert
@@ -291,16 +294,38 @@ def create_theme_palette(
         The upper and lower bounds of hue values for the colors to be used in the resulting palette.
 
     lightness_bend_scale: float (default 8.0)
+        Approximately how much to deform the lightness value away from the central base color in
+        either direction *per* color in the generated palette.
+
     max_lightness_bend: float (default 60.0)
+        The maximum amount to distort lightness away from the central base color in either direction
+        over the whole generated palette.
+
     chroma_bend_scale: float (default 6.0)
+        Approximately how much to deform the chroma value away from the central base color in
+        either direction *per* color in the generated palette.
+
     max_chroma_bend: float (default 60.0)
+        The maximum amount to distort chroma away from the central base color in either direction
+        over the whole generated palette.
+
     hue_bend_scale: float (default 6.0)
+        Approximately how much to deform the hue value away from the central base color in
+        either direction *per* color in the generated palette.
+
     max_hue_bend: float (default 45.0)
+        The maximum amount to distort hue away from the central base color in either direction
+        over the whole generated palette.
+
     as_hex: bool (default True)
+        Whether to return the palette as hex-codes or RGB float triples.
 
     Returns
     -------
-
+    palette: List of hex-code string or array of shape (palette_size, 3)
+        The resulting theme palette. It may not contain the base color, but should provide a smooth
+        palette over a variation of chroma and lightness with a small change in hue based around
+        the base color.
     """
     if palette_size == 1:
         return [base_color]
@@ -381,6 +406,91 @@ def create_block_palette(
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
 ) -> List[str] | List[Tuple[float, float, float]]:
+    """Create a categorical color palette in blocks using the Glasbey algorithm.
+    This should generate a palette that maximizes the perceptual distances between blocks in the palette up to the
+    constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. In turn each
+    block should be a range of colors thematically centered around a base colour. This is most useful for two
+    layer hierarchical categories, where the top layer categories each get their own block, and the finer grained
+    sub-categories get their own colour within the block.
+
+    Parameters
+    ----------
+    block_sizes: List of ints
+        The sizes of the different blocks to generate. The total palette size will be the sum of all the individual
+        block sizes.
+
+    sort_block_sizes: bool (default True)
+        This approach to palette generation works best when longer blocks are generated first. If this is set to True
+        the block sizes will be sorted for the purposes of generation -- the returned palette will retain the same
+        block size ordering as input however. If this param is False the block sizes will be generated in the order
+        given, providing the greatest distances between the early blocks.
+
+    grid_size: int or triple of int (default 64)
+        When generating a grid of colors that can be used for the platte this determines
+        the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
+        color space. A grid_size of 256 in RGB will generate all colors that can be represented in RGB. If a triple of
+        ints is given then it is the side lengths of cuboid sampling the grid color space. This can be useful if sampling
+        JCH space when you may want to sample more hues than chroma values, for example.
+
+    grid_space: "RGB" or "JCh" (default RGB)
+        The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
+        however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
+        grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
+
+    generated_color_lightness_bounds: (float, float) (default (30, 60))
+        The upper and lower bounds of lightness values for the block base colors to be used in generating the theme
+        palette for the block. These are best kept narrower than a standard Glasbey palette since the theme
+        palette will introduce extra lightness/chroma variation.
+
+    generated_color_chroma_bounds: (float, float) (default (60, 90))
+        The upper and lower bounds of chroma values for the block base colors to be used in generating the theme
+        palette for the block. These are best kept narrower than a standard Glasbey palette since the theme
+        palette will introduce extra lightness/chroma variation.
+
+    theme_lightness_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of lightness values for the colors to be used in the theme palette of an individual
+        block palette.
+
+    theme_chroma_bounds: (float, float) (default (10, 60))
+        The upper and lower bounds of chroma values for the colors to be used in the theme palette of an individual
+        block palette.
+
+    theme_hue_bounds: (float, float) (default (0, 360))
+        The upper and lower bounds of hue values for the colors to be used in the theme palette of an individual
+        block palette.
+
+    lightness_bend_scale: float (default 8.0)
+        Approximately how much to deform the lightness value away from the central base color in
+        either direction *per* color in each block palette.
+
+    max_lightness_bend: float (default 60.0)
+        The maximum amount to distort lightness away from the central base color in either direction
+        over a whole block palette.
+
+    chroma_bend_scale: float (default 6.0)
+        Approximately how much to deform the chroma value away from the central base color in
+        either direction *per* color in each block palette.
+
+    max_chroma_bend: float (default 60.0)
+        The maximum amount to distort chroma away from the central base color in either direction
+        over a whole block palette.
+
+    hue_bend_scale: float (default 6.0)
+        Approximately how much to deform the hue value away from the central base color in
+        either direction *per* color in each block palette.
+
+    max_hue_bend: float (default 45.0)
+        The maximum amount to distort hue away from the central base color in either direction
+        over a whole block palette.
+
+    as_hex: bool (default True)
+        Whether to return the palette as hex-codes or RGB float triples.
+
+    Returns
+    -------
+    palette:
+        The resulting palette with blocks of theme palette of the specified block sizes.
+    """
     if sort_block_sizes:
         block_order = np.argsort(block_sizes)[::-1]
         block_sizes_for_generation = np.asarray(block_sizes)[block_order]
