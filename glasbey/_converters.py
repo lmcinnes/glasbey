@@ -58,7 +58,7 @@ def palette_to_sRGB1(palette, max_colors=12):
             try:
                 cmap = get_cmap(palette)
                 if hasattr(cmap, "colors") and len(cmap.colors) <= max_colors:
-                    result = array([color[:, :3] for color in cmap.colors], dtype=float32, order="C")
+                    result = array([color[:3] for color in cmap.colors], dtype=float32, order="C")
                 else:
                     result = cmap(linspace(0, 1, max_colors))[:, :3].astype(float32, order="C")
                 return result
