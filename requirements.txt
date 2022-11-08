@@ -1,0 +1,4 @@
+numpy>=1.21
+numba>=0.56
+colorspacious>=1.1
+matplotlib>=3.5
