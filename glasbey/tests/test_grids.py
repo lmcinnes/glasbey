@@ -78,7 +78,14 @@ def test_jch_bounding_matches():
         64, lightness_bounds=(23, 79), chroma_bounds=(27, 91), hue_bounds=(51, 351)
     )
 
-    other_grid = constrain_by_lightness_chroma_hue(grid.copy(), "JCh", output_colorspace="JCh")
+    other_grid = constrain_by_lightness_chroma_hue(
+        grid.copy(),
+        "JCh",
+        output_colorspace="JCh",
+        lightness_bounds=(23, 79),
+        chroma_bounds=(27, 91),
+        hue_bounds=(51, 351),
+    )
 
     assert np.allclose(grid, other_grid)
 

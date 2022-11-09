@@ -132,4 +132,4 @@ def test_bad_params():
         extend_palette("fish", 8)
 
     with pytest.raises(ValueError):
-        create_block_palette("tab10", 8, grid_space="fish")
+        create_block_palette([3, 3, 3], grid_space="fish")

@@ -34,7 +34,7 @@ def test_srgb1_conversion(palette):
         if palette.startswith("#"):
             assert srgb1_pal.shape[0] == 1
         else:
-            pal = get_cmap(palette).colors[:, :3]
+            pal = np.asarray(get_cmap(palette).colors)[:, :3]
             assert len(pal) == len(srgb1_pal)
             assert np.allclose(pal, srgb1_pal)
     else:
