@@ -46,7 +46,7 @@ steps:
   displayName: 'Run tests'
 
 - script: |
-    export COVERALLS_REPO_TOKEN=$(COVERALLS_REPO_TOKEN)
+    export COVERALLS_REPO_TOKEN=$COVERALLS_REPO_TOKEN
     coveralls
   displayName: 'Publish to coveralls'
 
