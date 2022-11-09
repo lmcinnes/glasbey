@@ -16,7 +16,7 @@
 .. |build_status| image:: https://dev.azure.com/lelandmcinnes/Glasbey%20builds/_apis/build/status/lmcinnes.glasbey?branchName=main
 .. _build_status: https://dev.azure.com/lelandmcinnes/Glasbey%20builds/_build/latest?definitionId=2&branchName=main
 
-.. |Coverage| image:: https://coveralls.io/repos/github/lmcinnes/glasbey/badge.svg
+.. |Coverage| image:: https://coveralls.io/repos/github/lmcinnes/glasbey/badge.svg?branch=HEAD
 .. _Coverage: https://coveralls.io/github/lmcinnes/glasbey
 
 .. |Docs| image:: https://readthedocs.org/projects/glasbey/badge/?version=latest
