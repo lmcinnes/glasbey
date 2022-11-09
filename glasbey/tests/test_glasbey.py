@@ -10,6 +10,7 @@ from glasbey._glasbey import (
     create_block_palette,
     extend_palette,
 )
+from glasbey._converters import palette_to_sRGB1
 
 from typing import *
 
@@ -35,11 +36,11 @@ def test_create_palette_distances(grid_size, grid_space: Literal["RGB", "JCh"]):
 
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
-@pytest.mark.parametrize("palette_to_extend", ["tab10", "Accent", "Set1"])
+@pytest.mark.parametrize("palette_to_extend", ["tab10", "Accent", "Set1", "#3264c8"])
 def test_extend_palette_distances(
     grid_size, grid_space: Literal["RGB", "JCh"], palette_to_extend: str
 ):
-    initial_palette = get_cmap(palette_to_extend, 8).colors
+    initial_palette = palette_to_sRGB1(palette_to_extend)
     palette = extend_palette(
         initial_palette, 12, grid_size=grid_size, grid_space=grid_space
     )
@@ -47,7 +48,7 @@ def test_extend_palette_distances(
     rgb_palette = np.asarray([to_rgb(color) for color in palette])
     cam_palette = cspace_convert(rgb_palette, "sRGB1", "CAM02-UCS")
 
-    for i in range(9, 11):
+    for i in range(len(initial_palette) + 1, 11):
         prev_min_dist = np.min(np.linalg.norm(cam_palette[:i] - cam_palette[i], axis=1))
         current_min_dist = np.min(
             np.linalg.norm(cam_palette[: i + 1] - cam_palette[i + 1], axis=1)
@@ -95,10 +96,10 @@ def test_theme_palette_bounds():
     jch_palette = cspace_convert(rgb_palette, "sRGB1", "JCh")
 
     assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
-    assert 8 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 80
+    assert 6 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 80
     assert (
-        36 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
-        or 36 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+        24 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+        or 24 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
     )
 
 

@@ -108,3 +108,7 @@ def test_bad_params():
 
     with pytest.raises(ValueError):
         jch_grid(64, output_colorspace="fish")
+
+    grid = rgb_grid(64)
+    with pytest.raises(ValueError):
+        constrain_by_lightness_chroma_hue(grid, "sRGB1", hue_bounds=(300, 90), output_colorspace="fish")
