@@ -106,7 +106,7 @@ def test_theme_palette_bounds():
     "block_sizes", [[5, 5, 3, 2, 2, 1], [1, 5, 3, 4, 2], [9, 9, 12, 16]]
 )
 @pytest.mark.parametrize("sort_block_sizes", [True, False])
-@pytest.mark.parametrize("grid_sapce", ["RGB", "JCh"])
+@pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 def test_block_palette_sizing(block_sizes, sort_block_sizes, grid_space):
     pal = create_block_palette(block_sizes, sort_block_sizes=sort_block_sizes, grid_space=grid_space)
     assert len(pal) == sum(block_sizes)
