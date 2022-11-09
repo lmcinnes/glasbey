@@ -106,8 +106,9 @@ def test_theme_palette_bounds():
     "block_sizes", [[5, 5, 3, 2, 2, 1], [1, 5, 3, 4, 2], [9, 9, 12, 16]]
 )
 @pytest.mark.parametrize("sort_block_sizes", [True, False])
-def test_block_palette_sizing(block_sizes, sort_block_sizes):
-    pal = create_block_palette(block_sizes, sort_block_sizes=sort_block_sizes)
+@pytest.mark.parametrize("grid_sapce", ["RGB", "JCh"])
+def test_block_palette_sizing(block_sizes, sort_block_sizes, grid_space):
+    pal = create_block_palette(block_sizes, sort_block_sizes=sort_block_sizes, grid_space=grid_space)
     assert len(pal) == sum(block_sizes)
 
     for start, end in zip(
@@ -118,3 +119,17 @@ def test_block_palette_sizing(block_sizes, sort_block_sizes):
 
         for i in range(end - start - 1):
             assert 2.0 < np.linalg.norm(cam_palette[i] - cam_palette[i + 1]) <= 42.0
+
+
+def test_bad_params():
+    with pytest.raises(ValueError):
+        create_palette(8, grid_space="fish")
+
+    with pytest.raises(ValueError):
+        extend_palette("tab10", 8, grid_space="fish")
+
+    with pytest.raises(ValueError):
+        extend_palette("fish", 8)
+
+    with pytest.raises(ValueError):
+        create_block_palette("tab10", 8, grid_space="fish")

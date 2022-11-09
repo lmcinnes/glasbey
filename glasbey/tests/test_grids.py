@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 
-from glasbey._grids import rgb_grid, jch_grid
+from glasbey._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
 
 
 @pytest.mark.parametrize(
@@ -72,3 +72,32 @@ def test_grid_jch_bounds():
     assert np.max(grid.T[1]) <= 91
     assert np.min(grid.T[2]) >= 51
     assert np.max(grid.T[2]) <= 351
+
+def test_jch_bounding_matches():
+    grid = jch_grid(
+        64, lightness_bounds=(23, 79), chroma_bounds=(27, 91), hue_bounds=(51, 351)
+    )
+
+    other_grid = constrain_by_lightness_chroma_hue(grid.copy(), "JCh", output_colorspace="JCh")
+
+    assert np.allclose(grid, other_grid)
+
+
+def test_bad_params():
+    with pytest.raises(ValueError):
+        rgb_grid((64, 64, 64, 64))
+
+    with pytest.raises(ValueError):
+        rgb_grid("fish")
+
+    with pytest.raises(ValueError):
+        rgb_grid(64, output_colorspace="fish")
+
+    with pytest.raises(ValueError):
+        jch_grid((64, 64, 64, 64))
+
+    with pytest.raises(ValueError):
+        jch_grid("fish")
+
+    with pytest.raises(ValueError):
+        jch_grid(64, output_colorspace="fish")
