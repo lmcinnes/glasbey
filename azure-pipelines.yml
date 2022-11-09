@@ -1,0 +1,52 @@
+# Python package
+# Create and test a Python package on multiple Python versions.
+# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
+# https://docs.microsoft.com/azure/devops/pipelines/languages/python
+
+trigger:
+- master
+
+# Matrix needs to be manually built:
+# https://github.com/Microsoft/azure-pipelines-yaml/issues/20
+strategy:
+  matrix:
+    mac_py310:
+      imageName: 'macOS-latest'
+      python.version: '3.10'
+    linux_py310:
+      imageName: 'ubuntu-latest'
+      python.version: '3.10'
+    windows_py310:
+      imageName: 'windows-latest'
+      python.version: '3.10'
+
+pool:
+  vmImage: $(imageName)
+
+steps:
+- task: UsePythonVersion@0
+  inputs:
+    versionSpec: '$(python.version)'
+  displayName: 'Use Python $(python.version)'
+
+- script: |
+    python -m pip install --upgrade pip
+    pip install -r requirements.txt
+  displayName: 'Install dependencies'
+
+- script: |
+    pip install -e .
+    pip install pytest
+    pip install pytest-cov
+    pip install coveralls
+  displayName: 'Install package'
+
+- script: |
+    pytest glasbey/tests --show-capture=no -v --disable-warnings --junitxml=junit/test-results.xml --cov=glasbey/ --cov-report=xml --cov-report=html
+  displayName: 'Run tests'
+
+- task: PublishTestResults@2
+  inputs:
+    testResultsFiles: 'coverage.xml'
+    testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(python.version)'
+  condition: succeededOrFailed()
