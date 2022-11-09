@@ -60,7 +60,7 @@ html_theme = "sphinx_rtd_theme"
 #
 html_theme_options = {"navigation_depth": 3, "logo_only": True}
 
-html_logo = "pynndescent_logo_no_text.png"
+html_logo = "glasbey_logo_rtd.png"
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,

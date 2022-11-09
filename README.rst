@@ -1,3 +1,27 @@
+.. -*- mode: rst -*-
+
+.. image:: doc/glasbey_logo.png
+  :width: 600
+  :alt: Glasbey logo
+  :align: center
+
+|pypi_version|_ |License|_ |build_status|_ |Coverage|_ |Docs|_
+
+.. |pypi_version| image:: https://img.shields.io/pypi/g/glasbey.svg
+.. _pypi_version: https://pypi.python.org/pypi/glasbey/
+
+.. |License| image:: https://img.shields.io/pypi/g/glasbey.svg
+.. _License: https://github.com/lmcinnes/glasbey/blob/main/LICENSE
+
+.. |build_status| image:: https://dev.azure.com/lelandmcinnes/Glasbey%20builds/_apis/build/status/lmcinnes.glasbey?branchName=main
+.. _build_status: https://dev.azure.com/lelandmcinnes/Glasbey%20builds/_build/latest?definitionId=2&branchName=main
+
+.. |Coverage| image:: https://coveralls.io/repos/github/lmcinnes/glasbey/badge.svg
+.. _Coverage: https://coveralls.io/github/lmcinnes/glasbey
+
+.. |Docs| image:: https://readthedocs.org/projects/glasbey/badge/?version=latest
+.. _Docs: https://glasbey.readthedocs.io/en/latest/?badge=latest
+
 
 =======================================
 Glasbey Categorical Color Palette Tools
@@ -16,6 +40,34 @@ certain look to your palette. Fortunately we can use math and perceptual colour 
 maximize the perceptual visual distinctiveness of colours within constraints. It is also easy to extend an
 existing palette, or seed a created palette with some initial colours (perhaps your company or institutions colours).
 Lastly, glasbey makes it easy to generate block palettes, suitable for working with hierarchical categories.
+
+Create categorical palettes
+
+.. image:: doc/glasbey_basic_palette.png
+  :width: 600
+  :alt: Glasbey basic palette example
+  :align: center
+
+or constrain the palette options (e.g. to muted colours)
+
+.. image:: doc/glasbey_muted_palette.png
+  :width: 600
+  :alt: Glasbey muted palette example
+  :align: center
+
+or extend existing palettes
+
+.. image:: doc/glasbey_tab10_palette.png
+  :width: 600
+  :alt: Glasbey extending tab10 example
+  :align: center
+
+or create block categorical palettes
+
+.. image:: doc/glasbey_block_palette.png
+  :width: 600
+  :alt: Glasbey block palette example
+  :align: center
 
 -----------
 Basic Usage
