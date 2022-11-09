@@ -17,10 +17,9 @@ from glasbey._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
 def test_grid_length(grid_size, color_space):
     if color_space == "RGB":
         grid = rgb_grid(grid_size=grid_size)
-    elif color_space == "JCh":
-        grid = jch_grid(grid_size=grid_size)
     else:
-        raise ValueError("Bad colorspace")
+        grid = jch_grid(grid_size=grid_size)
+
 
     if type(grid_size) is int:
         assert len(grid) == grid_size**3
@@ -41,10 +40,8 @@ def test_grid_length(grid_size, color_space):
 def test_grid_dim(grid_size, color_space):
     if color_space == "RGB":
         grid = rgb_grid(grid_size=grid_size)
-    elif color_space == "JCh":
-        grid = jch_grid(grid_size=grid_size)
     else:
-        raise ValueError("Bad colorspace")
+        grid = jch_grid(grid_size=grid_size)
 
     if type(grid_size) is int:
         for i in range(3):
