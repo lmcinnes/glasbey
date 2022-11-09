@@ -1,0 +1,8 @@
+pygments>=2.4.1
+jupyterlab_pygments>=0.1.1
+ipykernel
+nbsphinx
+numpy>=1.21
+numba>=0.56
+colorspacious>=1.1
+matplotlib>=3.5
