@@ -109,7 +109,9 @@ def test_theme_palette_bounds():
 @pytest.mark.parametrize("sort_block_sizes", [True, False])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 def test_block_palette_sizing(block_sizes, sort_block_sizes, grid_space):
-    pal = create_block_palette(block_sizes, sort_block_sizes=sort_block_sizes, grid_space=grid_space)
+    pal = create_block_palette(
+        block_sizes, sort_block_sizes=sort_block_sizes, grid_space=grid_space
+    )
     assert len(pal) == sum(block_sizes)
 
     for start, end in zip(
@@ -134,3 +136,40 @@ def test_bad_params():
 
     with pytest.raises(ValueError):
         create_block_palette([3, 3, 3], grid_space="fish")
+
+
+def test_create_palette_colorblind_safe():
+    pal = create_palette(6, colorblind_safe=True, cvd_severity=100.0, as_hex=False)
+    jch_pal = cspace_convert(pal, "sRGB1", "JCh")
+
+    # Assert we haven't created any troublesome colors
+    assert np.all((jch_pal[:, 2] < 90) | (jch_pal[:, 2] > 240))
+
+
+@pytest.mark.parametrize("palette_to_extend", ["tab10", "Set1", "Pastel1"])
+def test_extend_palette_colorblind_safe(palette_to_extend):
+    orig_palette = palette_to_sRGB1(palette_to_extend)
+    pal = extend_palette(
+        palette_to_extend,
+        len(orig_palette) + 4,
+        colorblind_safe=True,
+        cvd_severity=100.0,
+        as_hex=False,
+    )
+    jch_pal = cspace_convert(pal, "sRGB1", "JCh")
+
+    # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
+    assert np.all(
+        (jch_pal[len(orig_palette) :, 2] < 140)
+        | (jch_pal[len(orig_palette) :, 2] > 180)
+    )
+
+
+def test_block_palette_colorblind():
+    pal = create_block_palette(
+        [4, 4, 4, 4], colorblind_safe=True, cvd_severity=100.0, as_hex=False
+    )
+    jch_pal = cspace_convert(pal, "sRGB1", "JCh")
+
+    # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
+    assert np.all((jch_pal[:, 2] < 90) | (jch_pal[:, 2] > 240))

@@ -81,7 +81,8 @@ User Guide
    creating_palettes
    extending_palettes
    creating_block_palettes
-
+   color_vision_deficiency
+   api
 
 ----------------
 Acknowledgements
