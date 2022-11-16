@@ -16,7 +16,7 @@ from typing import *
 def create_palette(
     palette_size: int = 256,
     *,
-    grid_size: int | Tuple[int, int, int] = 64,
+    grid_size: Union[int, Tuple[int, int, int]] = 64,
     as_hex: bool = True,
     grid_space: Literal["RGB", "JCh"] = "RGB",
     lightness_bounds: Tuple[float, float] = (10, 90),
@@ -25,7 +25,7 @@ def create_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
-) -> List[str] | np.ndarray:
+) -> Union[List[str], np.ndarray]:
     """Create a categorical color palette with ``palette_size`` many colours using the Glasbey algorithm with the
     given bounds on hue, chroma and lightness. This should generate a palette that maximizes the perceptual distances
     between colours in the palette up to the constraints on hue, chroma and lightness, and the granularity of the
@@ -122,7 +122,7 @@ def extend_palette(
     palette,
     palette_size: int = 256,
     *,
-    grid_size: int | Tuple[int, int, int] = 64,  # type: ignore
+    grid_size: Union[int, Tuple[int, int, int]] = 64,  # type: ignore
     as_hex: bool = True,
     grid_space: Literal["RGB", "JCh"] = "RGB",
     lightness_bounds: Optional[Tuple[float, float]] = None,
@@ -131,7 +131,7 @@ def extend_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
-) -> List[str] | np.ndarray:
+) -> Union[List[str], np.ndarray]:
     """Extend an existing categorical color palette to have ``palette_size`` many colors using the Glasbey algorithm.
     This should generate a palette that maximizes the perceptual distances between colours in the palette up to the
     constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. If the
@@ -270,7 +270,7 @@ def create_theme_palette(
     hue_bend_scale: float = 6.0,
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
-) -> List[str] | List[Tuple[float, float, float]]:
+) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a color palette with a range of colors around a central theme color that vary smoothly in a range
     of lightness, chroma and (to less of a degree) hue. The goal is to generate a smooth color palette that
     provides some variation of colors while remaining relatively close to the base color. This is primarily for
@@ -391,7 +391,7 @@ def create_block_palette(
     block_sizes: List[int],
     *,
     sort_block_sizes: bool = True,
-    grid_size: int | Tuple[int, int, int] = 64,  # type: ignore
+    grid_size: Union[int, Tuple[int, int, int]] = 64,  # type: ignore
     grid_space: Literal["RGB", "JCh"] = "RGB",
     generated_color_lightness_bounds: Tuple[float, float] = (30.0, 60.0),
     generated_color_chroma_bounds: Tuple[float, float] = (60.0, 90.0),
@@ -405,7 +405,7 @@ def create_block_palette(
     hue_bend_scale: float = 6.0,
     max_hue_bend: float = 45.0,
     as_hex: bool = True,
-) -> List[str] | List[Tuple[float, float, float]]:
+) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks using the Glasbey algorithm.
     This should generate a palette that maximizes the perceptual distances between blocks in the palette up to the
     constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. In turn each
@@ -497,7 +497,7 @@ def create_block_palette(
     else:
         block_sizes_for_generation = block_sizes
 
-    palette: List[str] | List[Tuple[float, float, float]] = []  # type: ignore
+    palette: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
     initial_color = create_palette(
         1,
         lightness_bounds=(
@@ -579,7 +579,7 @@ def create_block_palette(
         block_start_indices = np.hstack(
             ([0], np.cumsum(block_sizes_for_generation)[:-1])
         )
-        result: List[str] | List[Tuple[float, float, float]] = []  # type: ignore
+        result: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
 
         for i in np.argsort(block_order):
             size = block_sizes_for_generation[i]
