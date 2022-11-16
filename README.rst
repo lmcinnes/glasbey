@@ -7,10 +7,10 @@
 
 |pypi_version|_ |License|_ |build_status|_ |Coverage|_ |Docs|_
 
-.. |pypi_version| image:: https://img.shields.io/pypi/g/glasbey.svg
+.. |pypi_version| image:: https://img.shields.io/pypi/v/glasbey.svg
 .. _pypi_version: https://pypi.python.org/pypi/glasbey/
 
-.. |License| image:: https://img.shields.io/pypi/g/glasbey.svg
+.. |License| image:: https://img.shields.io/pypi/l/glasbey
 .. _License: https://github.com/lmcinnes/glasbey/blob/main/LICENSE
 
 .. |build_status| image:: https://dev.azure.com/lelandmcinnes/Glasbey%20builds/_apis/build/status/lmcinnes.glasbey?branchName=main
