@@ -5,11 +5,11 @@ import numpy as np
 
 from colorspacious import cspace_convert
 
-from typing import Tuple
+from typing import Tuple, Union
 
 
 def rgb_grid(
-    grid_size: int | Tuple[int, int, int] = 64,
+    grid_size: Union[int, Tuple[int, int, int]] = 64,
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
@@ -93,7 +93,7 @@ def rgb_grid(
 
 
 def jch_grid(
-    grid_size: int | Tuple[int, int, int] = 64,
+    grid_size: Union[int, Tuple[int, int, int]] = 64,
     lightness_bounds: Tuple[float, float] = (10, 90),
     chroma_bounds: Tuple[float, float] = (10, 90),
     hue_bounds: Tuple[float, float] = (0, 360),
