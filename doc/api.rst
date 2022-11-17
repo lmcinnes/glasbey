@@ -2,7 +2,5 @@ Glasbey API Reference
 =====================
 
 .. automodule:: glasbey
-   :members:
+   :members: create_palette, extend_palette, create_block_palette
 
-.. automodule:: glasbey._glasbey
-   :members:
