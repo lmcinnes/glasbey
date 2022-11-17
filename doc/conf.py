@@ -32,10 +32,19 @@ master_doc = "index"
 # ones.
 extensions = [
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
+    "numpydoc",
     "nbsphinx",
     "sphinx.ext.mathjax",
 ]
+
+# this is needed for some reason...
+# see https://github.com/numpy/numpydoc/issues/69
+numpydoc_show_class_members = False
+
+autodoc_default_flags = ['members', 'inherited-members']
+autosummary_generate = True
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']

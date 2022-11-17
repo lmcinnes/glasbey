@@ -7,7 +7,12 @@ from colorspacious import cspace_convert
 from matplotlib.colors import rgb2hex, to_rgb, LinearSegmentedColormap
 
 from ._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
-from ._internals import generate_palette_cam02ucs, generate_next_color_cam02ucs
+from ._internals import (
+    generate_palette_cam02ucs,
+    generate_next_color_cam02ucs,
+    generate_palette_cam02ucs_and_other,
+    generate_next_color_cam02ucs_and_other,
+)
 from ._converters import get_rgb_palette, palette_to_sRGB1
 
 from typing import *
@@ -25,6 +30,9 @@ def create_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
+    colorblind_safe: bool = False,
+    cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
+    cvd_severity: float = 50.0,
 ) -> Union[List[str], np.ndarray]:
     """Create a categorical color palette with ``palette_size`` many colours using the Glasbey algorithm with the
     given bounds on hue, chroma and lightness. This should generate a palette that maximizes the perceptual distances
@@ -72,6 +80,33 @@ def create_palette(
         The upper and lower bounds of blue channel values for the colors to be used in the resulting palette if sampling
         the grid from RGB space.
 
+    colorblind_safe: bool (default False)
+        If True the created palette will attempt to select colours in a way that should be more easily distinguishable
+        for individuals with color vision deficiency. In particular the palette will be selected using distance in
+        CAM02-UCS space of a color vision deficient simulation of the sampling grid, so distances will more closely
+        resemble perceptual distances of individuals with color vision deficiency.
+
+    cvd_type: one of "protanomaly", "deuteranomaly", "tritanomaly" (default "deuteranomaly")
+        The type of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The cvd_type will
+        be passed to colorspacious to simulate the appropriate colour vision deficiency. Per the colorspacious docs:
+
+        * "protanomaly": A common form of red-green colorblindness; affects ~2% of white men to some degree (less
+          common among other ethnicities, much less common among women).
+        * "deuteranomaly": The most common form of red-green colorblindness; affects ~6% of white men to some degree
+          (less common among other ethnicities, much less common among women).
+        * "tritanomaly": A very rare form of colorblindness affecting blue/yellow discrimination – so rare that its
+          detailed effects and even rate of occurrence are not well understood. Affects <0.1% of people, possibly much
+          less. Also, the name we use here is somewhat misleading because only full tritanopia has been documented,
+          and partial tritanomaly likely does not exist. What this means is that while Colorspacious will happily
+          allow any severity value to be passed, probably only severity = 100 corresponds to any real people.
+
+    cvd_severity: float between 0 and 100 (default 50.0)
+        The severity of colour vision deficiency to attemnpt to be robust to if ``colorblind_safe`` is True. The
+        cvd_severity will be passed to colorspacious to similate the appropriate colour vision deficiency. Per the
+        colorspacious docs: Severity is any number between 0 (indicating regular vision) and 100 (indicating
+        complete dichromacy).
+
+
     Returns
     -------
     palette: List of hex-code string or array of shape (palette_size, 3)
@@ -103,18 +138,38 @@ def create_palette(
         )
     else:
         raise ValueError(
-            f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
+            f'Parameter grid_space should be one of "JCh" or "RGB" not {grid_space}'
         )
 
     initial_palette = cspace_convert(
         np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]]), "sRGB1", "CAM02-UCS"
     ).astype(np.float32, order="C")
 
-    palette = generate_palette_cam02ucs(
-        colors, initial_palette, np.uint32(palette_size + 2)
-    )
-    palette = get_rgb_palette(palette, as_hex=as_hex)[2:]
+    if not colorblind_safe:
+        palette = generate_palette_cam02ucs(
+            colors, initial_palette, np.uint32(palette_size + 2)
+        )
+    else:
+        cvd_space = {
+            "name": "sRGB1+CVD",
+            "cvd_type": cvd_type,
+            "severity": cvd_severity,
+        }
+        cvd_colors = cspace_convert(colors, "CAM02-UCS", "sRGB1")
+        cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
 
+        palette = generate_palette_cam02ucs_and_other(
+            colors,
+            cvd_colors,
+            initial_palette,
+            initial_palette,
+            np.uint32(palette_size + 2),
+            np.float32(0.0),
+        )
+
+    palette = get_rgb_palette(palette, as_hex=as_hex)[2:]
     return palette
 
 
@@ -131,6 +186,9 @@ def extend_palette(
     red_bounds: Tuple[float, float] = (0, 1),
     green_bounds: Tuple[float, float] = (0, 1),
     blue_bounds: Tuple[float, float] = (0, 1),
+    colorblind_safe: bool = False,
+    cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
+    cvd_severity: float = 50.0,
 ) -> Union[List[str], np.ndarray]:
     """Extend an existing categorical color palette to have ``palette_size`` many colors using the Glasbey algorithm.
     This should generate a palette that maximizes the perceptual distances between colours in the palette up to the
@@ -183,6 +241,33 @@ def extend_palette(
     blue_bounds: (float, float) (default (0.0, 1.0))
         The upper and lower bounds of blue channel values for the colors to be used in the resulting palette if sampling
         the grid from RGB space.
+
+    colorblind_safe: bool (default False)
+        If True the created palette will attempt to select colours in a way that should be more easily distinguishable
+        for individuals with color vision deficiency. In particular the palette will be selected using distance in
+        CAM02-UCS space of a color vision deficient simulation of the sampling grid, so distances will more closely
+        resemble perceptual distances of individuals with color vision deficiency.
+
+    cvd_type: one of "protanomaly", "deuteranomaly", "tritanomaly" (default "deuteranomaly")
+        The type of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The cvd_type will
+        be passed to colorspacious to simulate the appropriate colour vision deficiency. Per the colorspacious docs:
+
+        * "protanomaly": A common form of red-green colorblindness; affects ~2% of white men to some degree (less
+          common among other ethnicities, much less common among women).
+        * "deuteranomaly": The most common form of red-green colorblindness; affects ~6% of white men to some degree
+          (less common among other ethnicities, much less common among women).
+        * "tritanomaly": A very rare form of colorblindness affecting blue/yellow discrimination – so rare that its
+          detailed effects and even rate of occurrence are not well understood. Affects <0.1% of people, possibly much
+          less. Also, the name we use here is somewhat misleading because only full tritanopia has been documented,
+          and partial tritanomaly likely does not exist. What this means is that while Colorspacious will happily
+          allow any severity value to be passed, probably only severity = 100 corresponds to any real people.
+
+    cvd_severity: float between 0 and 100 (default 50.0)
+        The severity of colour vision deficiency to attemnpt to be robust to if ``colorblind_safe`` is True. The
+        cvd_severity will be passed to colorspacious to similate the appropriate colour vision deficiency. Per the
+        colorspacious docs: Severity is any number between 0 (indicating regular vision) and 100 (indicating
+        complete dichromacy).
+
 
     Returns
     -------
@@ -246,13 +331,38 @@ def extend_palette(
             f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
         )
 
-    palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
-        np.float32, order="C"
-    )
+    if not colorblind_safe:
+        palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
+        palette = generate_palette_cam02ucs(colors, palette, np.uint32(palette_size))
+    else:
+        cvd_space = {
+            "name": "sRGB1+CVD",
+            "cvd_type": cvd_type,
+            "severity": cvd_severity,
+        }
+        cvd_colors = cspace_convert(colors, "CAM02-UCS", "sRGB1")
+        cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
+        cam_palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
+        cvd_palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
 
-    palette = generate_palette_cam02ucs(colors, palette, np.uint32(palette_size))
+        palette = generate_palette_cam02ucs_and_other(
+            colors,
+            cvd_colors,
+            cam_palette,
+            cvd_palette,
+            np.uint32(palette_size),
+            np.float32(0.0),
+        )
+
     palette = get_rgb_palette(palette, as_hex=as_hex)
-
     return palette
 
 
@@ -384,7 +494,7 @@ def create_theme_palette(
     if as_hex:
         return [rgb2hex(color) for color in result]
     else:
-        return result.to_list()
+        return result.tolist()
 
 
 def create_block_palette(
@@ -404,6 +514,9 @@ def create_block_palette(
     max_chroma_bend: float = 60.0,
     hue_bend_scale: float = 6.0,
     max_hue_bend: float = 45.0,
+    colorblind_safe: bool = False,
+    cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
+    cvd_severity: float = 50.0,
     as_hex: bool = True,
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks using the Glasbey algorithm.
@@ -483,6 +596,33 @@ def create_block_palette(
         The maximum amount to distort hue away from the central base color in either direction
         over a whole block palette.
 
+
+    colorblind_safe: bool (default False)
+        If True the created palette will attempt to select colours in a way that should be more easily distinguishable
+        for individuals with color vision deficiency. In particular the palette will be selected using distance in
+        CAM02-UCS space of a color vision deficient simulation of the sampling grid, so distances will more closely
+        resemble perceptual distances of individuals with color vision deficiency.
+
+    cvd_type: one of "protanomaly", "deuteranomaly", "tritanomaly" (default "deuteranomaly")
+        The type of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The cvd_type will
+        be passed to colorspacious to simulate the appropriate colour vision deficiency. Per the colorspacious docs:
+
+        * "protanomaly": A common form of red-green colorblindness; affects ~2% of white men to some degree (less
+          common among other ethnicities, much less common among women).
+        * "deuteranomaly": The most common form of red-green colorblindness; affects ~6% of white men to some degree
+          (less common among other ethnicities, much less common among women).
+        * "tritanomaly": A very rare form of colorblindness affecting blue/yellow discrimination – so rare that its
+          detailed effects and even rate of occurrence are not well understood. Affects <0.1% of people, possibly much
+          less. Also, the name we use here is somewhat misleading because only full tritanopia has been documented,
+          and partial tritanomaly likely does not exist. What this means is that while Colorspacious will happily
+          allow any severity value to be passed, probably only severity = 100 corresponds to any real people.
+
+    cvd_severity: float between 0 and 100 (default 50.0)
+        The severity of colour vision deficiency to attemnpt to be robust to if ``colorblind_safe`` is True. The
+        cvd_severity will be passed to colorspacious to similate the appropriate colour vision deficiency. Per the
+        colorspacious docs: Severity is any number between 0 (indicating regular vision) and 100 (indicating
+        complete dichromacy).
+
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
 
@@ -499,7 +639,7 @@ def create_block_palette(
 
     palette: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
     initial_color = create_palette(
-        1,
+        2 if colorblind_safe else 1,
         lightness_bounds=(
             generated_color_lightness_bounds[0],
             generated_color_lightness_bounds[1],
@@ -509,7 +649,7 @@ def create_block_palette(
             generated_color_chroma_bounds[1],
         ),
         hue_bounds=(0, 360),
-    )[0]
+    )[-1]
     block = create_theme_palette(
         initial_color,
         block_sizes_for_generation[0],
@@ -550,14 +690,34 @@ def create_block_palette(
             f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
         )
 
+
+    if colorblind_safe:
+        cvd_space = {
+            "name": "sRGB1+CVD",
+            "cvd_type": cvd_type,
+            "severity": cvd_severity,
+        }
+        cvd_colors = cspace_convert(colors, "CAM02-UCS", "sRGB1")
+        cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
+            np.float32, order="C"
+        )
+
     distances = np.full(colors.shape[0], 1e9, dtype=np.float32, order="C")
 
     for block_size in block_sizes_for_generation[1:]:
         block_cam02ucs = cspace_convert(
             np.asarray([to_rgb(color) for color in block]), "sRGB1", "CAM02-UCS"
         ).astype(np.float32)
-        next_color = generate_next_color_cam02ucs(colors, distances, block_cam02ucs)
-        next_color = np.clip(cspace_convert(next_color, "CAM02-UCS", "sRGB1"), 0, 1)
+
+        if not colorblind_safe:
+            next_color = generate_next_color_cam02ucs(colors, distances, block_cam02ucs)
+            next_color = np.clip(cspace_convert(next_color, "CAM02-UCS", "sRGB1"), 0, 1)
+        else:
+            block_cvd_cam02ucs = cspace_convert(
+                np.asarray([to_rgb(color) for color in block]), cvd_space, "CAM02-UCS"
+            ).astype(np.float32)
+            next_color = generate_next_color_cam02ucs_and_other(colors, cvd_colors, distances, block_cam02ucs, block_cvd_cam02ucs, np.float32(0.0))
+            next_color = np.clip(cspace_convert(next_color, "CAM02-UCS", "sRGB1"), 0, 1)
 
         block = create_theme_palette(
             next_color,
