@@ -5,7 +5,7 @@ import numpy as np
 
 from colorspacious import cspace_convert
 
-from typing import Tuple, Union
+from typing import Tuple, Union, Literal
 
 
 def rgb_grid(
@@ -170,7 +170,9 @@ def jch_grid(
         try:
             # Drop unrepresentable colors
             rgb_colors = cspace_convert(jch_colors, "JCh", "sRGB1")
-            rgb_colors = rgb_colors[np.all((rgb_colors >= 0.0) & (rgb_colors <= 1.0), axis=1)]
+            rgb_colors = rgb_colors[
+                np.all((rgb_colors >= 0.0) & (rgb_colors <= 1.0), axis=1)
+            ]
             # convert to output space
             return cspace_convert(rgb_colors, "sRGB1", output_colorspace).astype(
                 np.float32, order="C"
@@ -181,11 +183,11 @@ def jch_grid(
 
 def constrain_by_lightness_chroma_hue(
     colors,
-    current_colorspace,
-    output_colorspace="CAM02-UCS",
-    lightness_bounds=(10, 90),
-    chroma_bounds=(10, 90),
-    hue_bounds=(0, 360),
+    current_colorspace: Literal["CAM02-UCS", "sRGB1", "JCh"],
+    output_colorspace: Literal["CAM02-UCS", "sRGB1", "JCh"] = "CAM02-UCS",
+    lightness_bounds: Tuple[float, float] = (10, 90),
+    chroma_bounds: Tuple[float, float] = (10, 90),
+    hue_bounds: Tuple[float, float] = (0, 360),
 ):
     """Given an array of colors in ``current_colorspace``, constrain the colors to fit with a given set of
     lightness, chroma and hue bounds, and return the pruned set of colors in the designated ``output_colorspace``.

@@ -5,15 +5,17 @@ import numpy as np
 
 from colorspacious import cspace_convert
 from matplotlib.colors import rgb2hex, to_rgb, LinearSegmentedColormap
+from sklearn.neighbors import NearestNeighbors
 
 from ._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
 from ._internals import (
     generate_palette_cam02ucs,
-    generate_next_color_cam02ucs,
+    get_next_color,
     generate_palette_cam02ucs_and_other,
-    generate_next_color_cam02ucs_and_other,
+    two_space_get_next_color,
 )
 from ._converters import get_rgb_palette, palette_to_sRGB1
+from ._optimizers import optimize_endpoint_color
 
 from typing import *
 
@@ -370,17 +372,17 @@ def create_theme_palette(
     base_color,
     palette_size: int = 5,
     *,
+    color_grid: Optional[np.ndarray] = None,
+    color_search_index: Optional[NearestNeighbors] = None,
     lightness_bounds: Tuple[float, float] = (10.0, 90.0),
     chroma_bounds: Tuple[float, float] = (10.0, 90.0),
     hue_bounds: Tuple[float, float] = (0.0, 360),
-    lightness_bend_scale: float = 8.0,
-    max_lightness_bend: float = 60.0,
-    chroma_bend_scale: float = 6.0,
-    max_chroma_bend: float = 60.0,
-    hue_bend_scale: float = 6.0,
-    max_hue_bend: float = 45.0,
+    other_colors: Optional[np.ndarray] = None,
+    min_color_offset: float = 0.2,
+    input_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
+    output_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
     as_hex: bool = True,
-) -> Union[List[str], List[Tuple[float, float, float]]]:
+) -> Union[List[str], List[Tuple[float, float, float]], np.ndarray]:
     """Create a color palette with a range of colors around a central theme color that vary smoothly in a range
     of lightness, chroma and (to less of a degree) hue. The goal is to generate a smooth color palette that
     provides some variation of colors while remaining relatively close to the base color. This is primarily for
@@ -403,30 +405,6 @@ def create_theme_palette(
     hue_bounds: (float, float) (default (0, 360))
         The upper and lower bounds of hue values for the colors to be used in the resulting palette.
 
-    lightness_bend_scale: float (default 8.0)
-        Approximately how much to deform the lightness value away from the central base color in
-        either direction *per* color in the generated palette.
-
-    max_lightness_bend: float (default 60.0)
-        The maximum amount to distort lightness away from the central base color in either direction
-        over the whole generated palette.
-
-    chroma_bend_scale: float (default 6.0)
-        Approximately how much to deform the chroma value away from the central base color in
-        either direction *per* color in the generated palette.
-
-    max_chroma_bend: float (default 60.0)
-        The maximum amount to distort chroma away from the central base color in either direction
-        over the whole generated palette.
-
-    hue_bend_scale: float (default 6.0)
-        Approximately how much to deform the hue value away from the central base color in
-        either direction *per* color in the generated palette.
-
-    max_hue_bend: float (default 45.0)
-        The maximum amount to distort hue away from the central base color in either direction
-        over the whole generated palette.
-
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
 
@@ -438,85 +416,136 @@ def create_theme_palette(
         the base color.
     """
     if palette_size == 1:
-        return [base_color]
+        if output_colorspace == "RGB":
+            if input_colorspace == "RGB":
+                return [base_color]
+            else:
+                return get_rgb_palette([base_color], as_hex=as_hex)
+        else:
+            if input_colorspace == "RGB":
+                return cspace_convert([to_rgb(base_color)], "sRGB1", "CAM02-UCS")
+            else:
+                return np.asarray(base_color).reshape(1, -1)
 
-    base_rgb = to_rgb(base_color)
-    base_jch = cspace_convert(base_rgb, "sRGB1", "JCh")
-
-    if palette_size > 2:
-        hue_bend = min(palette_size * hue_bend_scale, max_hue_bend)
-        light_bend = min(palette_size * lightness_bend_scale, max_lightness_bend)
-        chroma_bend = min(palette_size * chroma_bend_scale, max_chroma_bend)
+    if input_colorspace == "RGB":
+        base_color = cspace_convert(to_rgb(base_color), "sRGB1", "CAM02-UCS").astype(
+            np.float32
+        )
     else:
-        light_bend = max_lightness_bend / 2.0
-        chroma_bend = max_chroma_bend / 2.0
-        hue_bend = 0.0
+        base_color = np.asarray(base_color, dtype=np.float32)
 
-    start_jch = [
-        max(base_jch[0] - light_bend, lightness_bounds[0]),
-        min(base_jch[1] + chroma_bend, chroma_bounds[1]),
-        (base_jch[2] - hue_bend) % 360,
-    ]
-    end_jch = [
-        min(base_jch[0] + light_bend, lightness_bounds[1]),
-        max(base_jch[1] - chroma_bend, chroma_bounds[0]),
-        (base_jch[2] + hue_bend) % 360,
-    ]
-
-    start_cam02ucs = cspace_convert(start_jch, "JCh", "CAM02-UCS")
-    base_cam02ucs = cspace_convert(base_jch, "JCh", "CAM02-UCS")
-    end_cam02ucs = cspace_convert(end_jch, "JCh", "CAM02-UCS")
-
-    # Determine perceptual spacing
-    start_to_base_dist = np.sqrt(np.sum((start_cam02ucs - base_cam02ucs) ** 2))
-    base_to_end_dist = np.sqrt(np.sum((end_cam02ucs - base_cam02ucs) ** 2))
-    path_dist = start_to_base_dist + base_to_end_dist
-
-    start_rgb = np.clip(cspace_convert(start_jch, "JCh", "sRGB1"), 0, 1)
-    end_rgb = np.clip(cspace_convert(end_jch, "JCh", "sRGB1"), 0, 1)
-
-    # Create a linear colormap, perceptually spacing the colours
-    cmap = LinearSegmentedColormap.from_list(
-        "blend",
-        [(0.0, start_rgb), (start_to_base_dist / path_dist, base_rgb), (1.0, end_rgb)],
-    )
-    if palette_size > 2:
-        result = cmap(np.linspace(0.0, 1.0, palette_size))[:, :3]
-    elif palette_size == 2:
-        result = cmap(np.linspace(0.0, 1.0, palette_size + 5))[[1, 5], :3]
-    elif palette_size == 1:
-        return [base_color]
-    else:
-        raise ValueError(
-            f"Bad palette_size {palette_size} provided; cannot generate a theme palette of that size"
+    if color_grid is None:
+        color_grid = rgb_grid(
+            grid_size=64,
+            output_colorspace="JCh",
+        )
+        color_grid = constrain_by_lightness_chroma_hue(
+            color_grid,
+            "JCh",
+            lightness_bounds=lightness_bounds,
+            chroma_bounds=chroma_bounds,
+            hue_bounds=hue_bounds,
         )
 
-    if as_hex:
-        return [rgb2hex(color) for color in result]
+    if color_search_index is None:
+        color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
+            color_grid
+        )
+
+    if other_colors is None:
+        other_colors = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS")
+
+    # Specially coded offset vectors based on my aesthetic preferences
+    left_offset = np.array(
+        (
+            min(60, base_color[0] - 10),
+            -np.sign(base_color[1]) * max(0, 30 - base_color[0]) / 4.0,
+            np.sign(base_color[1]) * max(0, 30 - base_color[0]),
+        )
+    )
+    right_offset = np.array(
+        (
+            min(80, 110 - base_color[0] + max(base_color[1], 0) / 3.0),
+            np.sign(base_color[1]) * 5,
+            20,
+        )
+    )
+
+    left = color_grid[
+        np.squeeze(
+            color_search_index.kneighbors(
+                [base_color - left_offset], return_distance=False
+            )
+        )
+    ]
+    right = color_grid[
+        np.squeeze(
+            color_search_index.kneighbors(
+                [base_color + right_offset], return_distance=False
+            )
+        )
+    ]
+
+    left = optimize_endpoint_color(left, other_colors, color_grid, color_search_index)
+    right = optimize_endpoint_color(right, other_colors, color_grid, color_search_index)
+
+    left_to_mid = np.sqrt(np.sum((left - base_color) ** 2))
+    mid_to_right = np.sqrt(np.sum((right - base_color) ** 2))
+
+    xdata = np.array(
+        [-0.05, mid_to_right / (left_to_mid + mid_to_right), 1.05], dtype=np.float32
+    )
+    ydata = np.vstack([left, base_color, right])
+    polynomial = [np.polynomial.Polynomial.fit(xdata, ydata[:, i], 2) for i in range(3)]
+
+    window_width = min(min_color_offset * palette_size, 1.0)
+    expected_dist_distribution = np.linspace(
+        (1.0 - window_width) / 2.0, (1.0 + window_width) / 2.0, palette_size
+    )
+    xs = np.linspace(
+        (1.0 - window_width) / 2.0, (1.0 + window_width) / 2.0, palette_size
+    )
+
+    for anneal_val in np.linspace(1, 0, 10):
+        candidate_colors = np.asarray([p(xs) for p in polynomial]).T
+        indices = np.squeeze(
+            color_search_index.kneighbors(candidate_colors, return_distance=False)
+        )
+        candidate_colors = color_grid[indices]
+
+        dists = np.hstack(
+            [
+                [0],
+                np.sqrt(
+                    np.sum((candidate_colors[:-1] - candidate_colors[1:]) ** 2, axis=1)
+                ),
+            ]
+        )
+        dist_distribution = (window_width * np.cumsum(dists) / (dists.sum())) + (
+            1.0 - window_width
+        ) / 2.0
+        errors = dist_distribution - expected_dist_distribution
+        mean_squared_error = np.sum((errors) ** 2)
+        if mean_squared_error < 0.005:
+            break
+        else:
+            xs = xs - (errors * anneal_val)
+
+    if output_colorspace == "CAM02-UCS":
+        return candidate_colors
     else:
-        return result.tolist()
+        return get_rgb_palette(candidate_colors, as_hex=as_hex)
 
 
 def create_block_palette(
     block_sizes: List[int],
     *,
-    sort_block_sizes: bool = True,
     grid_size: Union[int, Tuple[int, int, int]] = 64,  # type: ignore
     grid_space: Literal["RGB", "JCh"] = "RGB",
-    generated_color_lightness_bounds: Tuple[float, float] = (30.0, 60.0),
-    generated_color_chroma_bounds: Tuple[float, float] = (60.0, 90.0),
-    theme_lightness_bounds: Tuple[float, float] = (10.0, 90.0),
-    theme_chroma_bounds: Tuple[float, float] = (10.0, 60.0),
-    theme_hue_bounds: Tuple[float, float] = (0.0, 360),
-    lightness_bend_scale: float = 8.0,
-    max_lightness_bend: float = 60.0,
-    chroma_bend_scale: float = 6.0,
-    max_chroma_bend: float = 60.0,
-    hue_bend_scale: float = 6.0,
-    max_hue_bend: float = 45.0,
     colorblind_safe: bool = False,
     cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
     cvd_severity: float = 50.0,
+    theme_color_spacing = 0.2,
     as_hex: bool = True,
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks using the Glasbey algorithm.
@@ -532,12 +561,6 @@ def create_block_palette(
         The sizes of the different blocks to generate. The total palette size will be the sum of all the individual
         block sizes.
 
-    sort_block_sizes: bool (default True)
-        This approach to palette generation works best when longer blocks are generated first. If this is set to True
-        the block sizes will be sorted for the purposes of generation -- the returned palette will retain the same
-        block size ordering as input however. If this param is False the block sizes will be generated in the order
-        given, providing the greatest distances between the early blocks.
-
     grid_size: int or triple of int (default 64)
         When generating a grid of colors that can be used for the platte this determines
         the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
@@ -549,53 +572,6 @@ def create_block_palette(
         The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
         however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
         grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
-
-    generated_color_lightness_bounds: (float, float) (default (30, 60))
-        The upper and lower bounds of lightness values for the block base colors to be used in generating the theme
-        palette for the block. These are best kept narrower than a standard Glasbey palette since the theme
-        palette will introduce extra lightness/chroma variation.
-
-    generated_color_chroma_bounds: (float, float) (default (60, 90))
-        The upper and lower bounds of chroma values for the block base colors to be used in generating the theme
-        palette for the block. These are best kept narrower than a standard Glasbey palette since the theme
-        palette will introduce extra lightness/chroma variation.
-
-    theme_lightness_bounds: (float, float) (default (10, 90))
-        The upper and lower bounds of lightness values for the colors to be used in the theme palette of an individual
-        block palette.
-
-    theme_chroma_bounds: (float, float) (default (10, 60))
-        The upper and lower bounds of chroma values for the colors to be used in the theme palette of an individual
-        block palette.
-
-    theme_hue_bounds: (float, float) (default (0, 360))
-        The upper and lower bounds of hue values for the colors to be used in the theme palette of an individual
-        block palette.
-
-    lightness_bend_scale: float (default 8.0)
-        Approximately how much to deform the lightness value away from the central base color in
-        either direction *per* color in each block palette.
-
-    max_lightness_bend: float (default 60.0)
-        The maximum amount to distort lightness away from the central base color in either direction
-        over a whole block palette.
-
-    chroma_bend_scale: float (default 6.0)
-        Approximately how much to deform the chroma value away from the central base color in
-        either direction *per* color in each block palette.
-
-    max_chroma_bend: float (default 60.0)
-        The maximum amount to distort chroma away from the central base color in either direction
-        over a whole block palette.
-
-    hue_bend_scale: float (default 6.0)
-        Approximately how much to deform the hue value away from the central base color in
-        either direction *per* color in each block palette.
-
-    max_hue_bend: float (default 45.0)
-        The maximum amount to distort hue away from the central base color in either direction
-        over a whole block palette.
-
 
     colorblind_safe: bool (default False)
         If True the created palette will attempt to select colours in a way that should be more easily distinguishable
@@ -631,65 +607,31 @@ def create_block_palette(
     palette:
         The resulting palette with blocks of theme palette of the specified block sizes.
     """
-    if sort_block_sizes:
-        block_order = np.argsort(block_sizes)[::-1]
-        block_sizes_for_generation = np.asarray(block_sizes)[block_order]
-    else:
-        block_sizes_for_generation = block_sizes
-
     palette: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
-    initial_color = create_palette(
-        2 if colorblind_safe else 1,
-        lightness_bounds=(
-            generated_color_lightness_bounds[0],
-            generated_color_lightness_bounds[1],
-        ),
-        chroma_bounds=(
-            generated_color_chroma_bounds[0],
-            generated_color_chroma_bounds[1],
-        ),
-        hue_bounds=(0, 360),
-    )[-1]
-    block = create_theme_palette(
-        initial_color,
-        block_sizes_for_generation[0],
-        lightness_bounds=theme_lightness_bounds,
-        chroma_bounds=theme_chroma_bounds,
-        hue_bounds=theme_hue_bounds,
-        lightness_bend_scale=lightness_bend_scale,
-        max_lightness_bend=max_lightness_bend,
-        chroma_bend_scale=chroma_bend_scale,
-        max_chroma_bend=max_chroma_bend,
-        hue_bend_scale=hue_bend_scale,
-        max_hue_bend=max_hue_bend,
-        as_hex=as_hex,
+    white, black = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS").astype(
+        np.float32
     )
-    palette.extend(block)  # type: ignore
-
     if grid_space == "JCh":
         colors = jch_grid(
             grid_size=grid_size,
-            lightness_bounds=generated_color_lightness_bounds,
-            chroma_bounds=generated_color_chroma_bounds,
+            lightness_bounds=(0, 100),
+            chroma_bounds=(0, 100),
             output_colorspace="CAM02-UCS",
         )
     elif grid_space == "RGB":
         colors = rgb_grid(
             grid_size=grid_size,
-            output_colorspace="JCh",
-        )
-        colors = constrain_by_lightness_chroma_hue(
-            colors,
-            "JCh",
-            lightness_bounds=generated_color_lightness_bounds,
-            chroma_bounds=generated_color_chroma_bounds,
-            hue_bounds=(0, 360),
+            output_colorspace="CAM02-UCS",
         )
     else:
         raise ValueError(
             f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
         )
 
+    sub_grid = colors[(colors[:, 0] >= 40) & (colors[:, 0] <= 70)]
+    color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
+        colors
+    )
 
     if colorblind_safe:
         cvd_space = {
@@ -697,55 +639,56 @@ def create_block_palette(
             "cvd_type": cvd_type,
             "severity": cvd_severity,
         }
-        cvd_colors = cspace_convert(colors, "CAM02-UCS", "sRGB1")
+        cvd_colors = cspace_convert(sub_grid, "CAM02-UCS", "sRGB1")
         cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
             np.float32, order="C"
         )
 
-    distances = np.full(colors.shape[0], 1e9, dtype=np.float32, order="C")
+    distances = np.full(sub_grid.shape[0], 1e12, dtype=np.float32, order="C")
 
-    for block_size in block_sizes_for_generation[1:]:
-        block_cam02ucs = cspace_convert(
-            np.asarray([to_rgb(color) for color in block]), "sRGB1", "CAM02-UCS"
-        ).astype(np.float32)
+    if not colorblind_safe:
+        get_next_color(distances, sub_grid, white)
+        get_next_color(distances, sub_grid, black)
+    else:
+        two_space_get_next_color(distances, sub_grid, cvd_colors, white, white, 0.0)
+        two_space_get_next_color(distances, sub_grid, cvd_colors, black, black, 0.0)
 
+    colors_to_avoid = np.vstack([black, white])
+
+    for block_size in block_sizes:
         if not colorblind_safe:
-            next_color = generate_next_color_cam02ucs(colors, distances, block_cam02ucs)
-            next_color = np.clip(cspace_convert(next_color, "CAM02-UCS", "sRGB1"), 0, 1)
+            base_color = get_next_color(distances, sub_grid, white)
         else:
-            block_cvd_cam02ucs = cspace_convert(
-                np.asarray([to_rgb(color) for color in block]), cvd_space, "CAM02-UCS"
-            ).astype(np.float32)
-            next_color = generate_next_color_cam02ucs_and_other(colors, cvd_colors, distances, block_cam02ucs, block_cvd_cam02ucs, np.float32(0.0))
-            next_color = np.clip(cspace_convert(next_color, "CAM02-UCS", "sRGB1"), 0, 1)
+            base_color, _ = two_space_get_next_color(
+                distances, sub_grid, cvd_colors, white, white, 0.0
+            )
 
         block = create_theme_palette(
-            next_color,
+            base_color,
             block_size,
-            lightness_bounds=theme_lightness_bounds,
-            chroma_bounds=theme_chroma_bounds,
-            hue_bounds=theme_hue_bounds,
-            lightness_bend_scale=lightness_bend_scale,
-            max_lightness_bend=max_lightness_bend,
-            chroma_bend_scale=chroma_bend_scale,
-            max_chroma_bend=max_chroma_bend,
-            hue_bend_scale=hue_bend_scale,
-            max_hue_bend=max_hue_bend,
-            as_hex=as_hex,
+            color_grid=colors,
+            color_search_index=color_search_index,
+            other_colors=colors_to_avoid,
+            input_colorspace="CAM02-UCS",
+            output_colorspace="CAM02-UCS",
+            min_color_offset=theme_color_spacing,
         )
-        palette.extend(block)  # type: ignore
+        colors_to_avoid = np.vstack([colors_to_avoid, block])
 
-    if sort_block_sizes:
-        block_start_indices = np.hstack(
-            ([0], np.cumsum(block_sizes_for_generation)[:-1])
-        )
-        result: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
+        for color in block:
+            if not colorblind_safe:
+                get_next_color(distances, sub_grid, color)
+            else:
+                cvd_color = cspace_convert(color, "CAM02-UCS", "sRGB1")
+                cvd_color = cspace_convert(cvd_color, cvd_space, "CAM02-UCS").astype(
+                    np.float32, order="C"
+                )
+                two_space_get_next_color(
+                    distances, sub_grid, cvd_colors, color, cvd_color, 0.0
+                )
 
-        for i in np.argsort(block_order):
-            size = block_sizes_for_generation[i]
-            block = palette[block_start_indices[i] : block_start_indices[i] + size]
-            result.extend(block)  # type: ignore
-    else:
-        result = palette
+        palette.extend(block.tolist())
 
-    return result
+    palette = get_rgb_palette(palette, as_hex=as_hex)
+
+    return palette

@@ -85,7 +85,7 @@ def test_theme_palette_distances_small():
     cam_palette = cspace_convert(rgb_palette, "sRGB1", "CAM02-UCS")
 
     for i in range(4):
-        assert 0.0 < np.linalg.norm(cam_palette[i] - cam_palette[i + 1]) <= 35.0
+        assert 0.0 < np.linalg.norm(cam_palette[i] - cam_palette[i + 1]) <= 45.0
 
 
 def test_theme_palette_bounds():
@@ -96,21 +96,20 @@ def test_theme_palette_bounds():
     jch_palette = cspace_convert(rgb_palette, "sRGB1", "JCh")
 
     assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
-    assert 6 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 80
+    assert 0 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 60
     assert (
-        24 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
-        or 24 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 90
+            (0 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 60)
+        or (0 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 60)
     )
 
 
 @pytest.mark.parametrize(
     "block_sizes", [[5, 5, 3, 2, 2, 1], [1, 5, 3, 4, 2], [9, 9, 12, 16]]
 )
-@pytest.mark.parametrize("sort_block_sizes", [True, False])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
-def test_block_palette_sizing(block_sizes, sort_block_sizes, grid_space):
+def test_block_palette_sizing(block_sizes, grid_space):
     pal = create_block_palette(
-        block_sizes, sort_block_sizes=sort_block_sizes, grid_space=grid_space
+        block_sizes, grid_space=grid_space
     )
     assert len(pal) == sum(block_sizes)
 
@@ -172,4 +171,4 @@ def test_block_palette_colorblind():
     jch_pal = cspace_convert(pal, "sRGB1", "JCh")
 
     # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
-    assert np.all((jch_pal[:, 2] < 90) | (jch_pal[:, 2] > 240))
+    assert np.all((jch_pal[:, 2] < 60) | (jch_pal[:, 2] > 230))
