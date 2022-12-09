@@ -171,4 +171,4 @@ def test_block_palette_colorblind():
     jch_pal = cspace_convert(pal, "sRGB1", "JCh")
 
     # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
-    assert np.all((jch_pal[:, 2] < 60) | (jch_pal[:, 2] > 230))
+    assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))

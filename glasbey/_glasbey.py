@@ -486,8 +486,8 @@ def create_theme_palette(
         )
     ]
 
-    left = optimize_endpoint_color(left, other_colors, color_grid, color_search_index)
-    right = optimize_endpoint_color(right, other_colors, color_grid, color_search_index)
+    left = optimize_endpoint_color(left, other_colors, color_grid, color_search_index, base_color - left)
+    right = optimize_endpoint_color(right, other_colors, color_grid, color_search_index, base_color - right)
 
     left_to_mid = np.sqrt(np.sum((left - base_color) ** 2))
     mid_to_right = np.sqrt(np.sum((right - base_color) ** 2))
@@ -542,6 +542,9 @@ def create_block_palette(
     *,
     grid_size: Union[int, Tuple[int, int, int]] = 64,  # type: ignore
     grid_space: Literal["RGB", "JCh"] = "RGB",
+    lightness_bounds: Tuple[float, float] = (10, 90),
+    chroma_bounds: Tuple[float, float] = (0, 80),
+    hue_bounds: Tuple[float, float] = (0, 360),
     colorblind_safe: bool = False,
     cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
     cvd_severity: float = 50.0,
@@ -614,14 +617,22 @@ def create_block_palette(
     if grid_space == "JCh":
         colors = jch_grid(
             grid_size=grid_size,
-            lightness_bounds=(0, 100),
-            chroma_bounds=(0, 100),
+            lightness_bounds=lightness_bounds,  # type: ignore
+            chroma_bounds=chroma_bounds,  # type: ignore
+            hue_bounds=hue_bounds,  # type: ignore
             output_colorspace="CAM02-UCS",
         )
     elif grid_space == "RGB":
         colors = rgb_grid(
             grid_size=grid_size,
-            output_colorspace="CAM02-UCS",
+            output_colorspace="JCh",
+        )
+        colors = constrain_by_lightness_chroma_hue(
+            colors,
+            "JCh",
+            lightness_bounds=lightness_bounds,
+            chroma_bounds=chroma_bounds,
+            hue_bounds=hue_bounds,
         )
     else:
         raise ValueError(
