@@ -11,7 +11,11 @@ def optimize_endpoint_color(
         if distances[closest_idx] >= 15.0:
             break
 
-        direction = color - closest_color
+        if distances[closest_idx] == 0:
+            direction = np.random.random(3)
+        else:
+            direction = color - closest_color
+
         direction /= np.sqrt(np.sum(direction**2))
         color += val * (direction)
         color = cam_grid[

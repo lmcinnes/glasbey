@@ -521,7 +521,7 @@ def create_theme_palette(
                 ),
             ]
         )
-        dist_distribution = (window_width * np.cumsum(dists) / (dists.sum())) + (
+        dist_distribution = (window_width * np.cumsum(dists) / (dists.sum() + 1e-8)) + (
             1.0 - window_width
         ) / 2.0
         errors = dist_distribution - expected_dist_distribution
