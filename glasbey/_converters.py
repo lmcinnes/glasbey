@@ -1,10 +1,33 @@
 # MIT License
 # Leland McInnes
 
+from typing import Tuple, Union
 from numpy import clip, max, linspace, array, asarray, float32, integer
 from colorspacious import cspace_convert
-from matplotlib.colors import rgb2hex, to_rgb
-from matplotlib.cm import get_cmap
+
+def _parse_hex_string(hex: str) -> Tuple[float, float, float]:
+    """Convert hex color to RGB."""
+    _hex = hex.lstrip("#")
+    if _hex.startswith("0x"):
+        _hex = _hex[2:]
+    if len(_hex) == 3:
+        # expand hex shorthand
+        _hex = "".join(2 * s for s in _hex)
+    if len(_hex) == 8:
+        # drop alpha channel, since this library is only interested in rgb
+        _hex = _hex[:6]
+    if len(_hex) != 6:
+        raise ValueError(f"Input #{hex} is not in #RRGGBB or #RGB format")
+    return tuple(int(_hex[i : i + 2], 16) / 255 for i in (0, 2, 4))
+
+def to_rgb(val: Union[str, Tuple[float, float, float]]):
+    return _parse_hex_string(val) if isinstance(val, str) else tuple(val)[:3]
+
+def to_hex(c: Tuple[float, float, float]) -> str:
+    """Convert *c* to a hex color."""
+    c = to_rgb(c)
+    return "#" + "".join(format(int(round(val * 255)), "02x") for val in c)
+
 
 
 def get_rgb_palette(cam02ucs_palette, as_hex: bool=True):
@@ -28,7 +51,7 @@ def get_rgb_palette(cam02ucs_palette, as_hex: bool=True):
     rgb_palette = clip(raw_rgb_palette, 0.0, 1.0)
 
     if as_hex:
-        return [rgb2hex(color) for color in rgb_palette]
+        return [to_hex(color) for color in rgb_palette]
     else:
         return rgb_palette.tolist()
 
@@ -55,6 +78,14 @@ def palette_to_sRGB1(palette, max_colors=12):
         if palette.startswith("#"):
             return array([to_rgb(palette)], dtype=float32, order="C")
         else:
+            try:
+                from matplotlib.cm import get_cmap
+            except ImportError:
+                raise ValueError(
+                    f"Unrecognized palette name {palette}. (Note that Matplotlib is "
+                    "not installed, and is required when passing colormap names)."
+                )
+
             try:
                 cmap = get_cmap(palette)
                 if hasattr(cmap, "colors") and len(cmap.colors) <= max_colors:

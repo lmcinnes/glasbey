@@ -4,7 +4,6 @@
 import numpy as np
 
 from colorspacious import cspace_convert
-from matplotlib.colors import rgb2hex, to_rgb, LinearSegmentedColormap
 from sklearn.neighbors import NearestNeighbors
 
 from ._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
@@ -14,7 +13,7 @@ from ._internals import (
     generate_palette_cam02ucs_and_other,
     two_space_get_next_color,
 )
-from ._converters import get_rgb_palette, palette_to_sRGB1
+from ._converters import get_rgb_palette, palette_to_sRGB1, to_rgb
 from ._optimizers import optimize_endpoint_color
 
 from typing import *
@@ -369,7 +368,7 @@ def extend_palette(
 
 
 def create_theme_palette(
-    base_color,
+    base_color: Union[str, Tuple[float, float, float]],
     palette_size: int = 5,
     *,
     color_grid: Optional[np.ndarray] = None,

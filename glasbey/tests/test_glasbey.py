@@ -2,18 +2,20 @@ import pytest
 import numpy as np
 
 from colorspacious import cspace_convert
-from matplotlib.colors import to_rgb
-from matplotlib.cm import get_cmap
 from glasbey._glasbey import (
     create_palette,
     create_theme_palette,
     create_block_palette,
     extend_palette,
 )
-from glasbey._converters import palette_to_sRGB1
+from glasbey._converters import palette_to_sRGB1, to_rgb
 
 from typing import *
 
+try:
+    from matplotlib.cm import get_cmap
+except ImportError:
+    get_cmap = None
 
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
@@ -33,7 +35,7 @@ def test_create_palette_distances(grid_size, grid_space: Literal["RGB", "JCh"]):
 
         assert prev_min_dist >= current_min_dist
 
-
+@pytest.mark.skipif(get_cmap is None, reason="matplotlib is not installed")
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 @pytest.mark.parametrize("palette_to_extend", ["tab10", "Accent", "Set1", "#3264c8"])
@@ -56,7 +58,7 @@ def test_extend_palette_distances(
 
         assert prev_min_dist >= current_min_dist
 
-
+@pytest.mark.skipif(get_cmap is None, reason="matplotlib is not installed")
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
 @pytest.mark.parametrize("grid_space", ["RGB"])
 @pytest.mark.parametrize("palette_to_extend", ["tab10", "Accent", "Set1"])
@@ -145,6 +147,7 @@ def test_create_palette_colorblind_safe():
     assert np.all((jch_pal[:, 2] < 90) | (jch_pal[:, 2] > 240))
 
 
+@pytest.mark.skipif(get_cmap is None, reason="matplotlib is not installed")
 @pytest.mark.parametrize("palette_to_extend", ["tab10", "Set1", "Pastel1"])
 def test_extend_palette_colorblind_safe(palette_to_extend):
     orig_palette = palette_to_sRGB1(palette_to_extend)
