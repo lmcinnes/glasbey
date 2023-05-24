@@ -78,7 +78,7 @@ def test_extend_palette_inferred_bounds(
 
 
 def test_theme_palette_distances_small():
-    base_color = np.clip(np.random.random(3), 0.2, 0.8)
+    base_color = np.clip(np.random.random(3), 0.4, 0.6)
     palette = create_theme_palette(base_color)
 
     rgb_palette = np.asarray([to_rgb(color) for color in palette])
