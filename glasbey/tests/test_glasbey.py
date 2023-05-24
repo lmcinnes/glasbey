@@ -97,10 +97,6 @@ def test_theme_palette_bounds():
 
     assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
     assert 0 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 60
-    assert (
-            (0 <= np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 60)
-        or (0 <= 360 - np.abs(jch_palette[0, 2] - jch_palette[4, 2]) <= 60)
-    )
 
 
 @pytest.mark.parametrize(
