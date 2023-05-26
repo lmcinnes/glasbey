@@ -1,20 +1,20 @@
-# Python package
-# Create and test a Python package on multiple Python versions.
-# Add steps that analyze code, save the dist with the build record, publish to a PyPI-compatible index, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/python
-
+# Trigger a build when there is a push to the main branch or a tag starts with release-
 trigger:
   branches:
     include:
     - main
+    - master
   tags:
     include:
     - release-*
 
+# Trigger a build when there is a pull request to the main branch
+# Ignore PRs that are just updating the docs
 pr:
   branches:
     include:
     - main
+    - master
     exclude:
     - doc/*
     - README.rst
