@@ -4,7 +4,10 @@
 from numpy import clip, max, linspace, array, asarray, float32, integer
 from colorspacious import cspace_convert
 from matplotlib.colors import rgb2hex, to_rgb
-from matplotlib.cm import get_cmap
+try:
+    from matplotlib.cm import get_cmap
+except ImportError:
+    from matplotlib.colormaps import get_cmap
 
 
 def get_rgb_palette(cam02ucs_palette, as_hex: bool=True):
