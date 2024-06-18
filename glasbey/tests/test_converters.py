@@ -2,7 +2,10 @@ import pytest
 import numpy as np
 
 from glasbey._converters import get_rgb_palette, palette_to_sRGB1
-from matplotlib.cm import get_cmap
+try:
+    from matplotlib.cm import get_cmap
+except ImportError:
+    from matplotlib.pyplot import get_cmap
 from matplotlib.colors import to_rgb
 from colorspacious import cspace_convert
 
