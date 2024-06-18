@@ -3,7 +3,10 @@ import numpy as np
 
 from colorspacious import cspace_convert
 from matplotlib.colors import to_rgb
-from matplotlib.cm import get_cmap
+try:
+    from matplotlib.cm import get_cmap
+except ImportError:
+    from matplotlib.pyplot import get_cmap
 from glasbey._glasbey import (
     create_palette,
     create_theme_palette,
