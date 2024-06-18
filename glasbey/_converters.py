@@ -7,7 +7,7 @@ from matplotlib.colors import rgb2hex, to_rgb
 try:
     from matplotlib.cm import get_cmap
 except ImportError:
-    from matplotlib.colormaps import get_cmap
+    from matplotlib.pyplot import get_cmap
 
 
 def get_rgb_palette(cam02ucs_palette, as_hex: bool=True):
