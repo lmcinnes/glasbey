@@ -21,7 +21,7 @@ from typing import *
 @pytest.mark.parametrize("grid_size", [32, 64, (32, 32, 128)])
 @pytest.mark.parametrize("grid_space", ["RGB", "JCh"])
 def test_create_palette_distances(grid_size, grid_space: Literal["RGB", "JCh"]):
-    palette = create_palette(10, grid_size=grid_size, grid_space=grid_space)
+    palette = create_palette(10, grid_size=grid_size, grid_space=grid_space, optimize_palette=False)
 
     rgb_palette = np.asarray(
         [(1.0, 1.0, 1.0), (0.0, 0.0, 0.0)] + [to_rgb(color) for color in palette]
@@ -45,7 +45,7 @@ def test_extend_palette_distances(
 ):
     initial_palette = palette_to_sRGB1(palette_to_extend)
     palette = extend_palette(
-        initial_palette, 12, grid_size=grid_size, grid_space=grid_space
+        initial_palette, 12, grid_size=grid_size, grid_space=grid_space, optimize_palette=False
     )
 
     rgb_palette = np.asarray([to_rgb(color) for color in palette])
