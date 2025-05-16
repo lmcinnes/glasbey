@@ -189,13 +189,27 @@ def create_palette(
     if optimize_palette:
         palette = palette[2:]
         color_search_index = NearestNeighbors().fit(colors)
-        palette = optimize_existing_palette(
-            palette,
-            colors,
-            color_search_index,
-            n_iter=optimize_palette_n_iter,
-            search_radius=optimize_palette_search_radius,
-        )
+        if colorblind_safe:
+            palette = optimize_existing_palette(
+                palette,
+                colors,
+                cvd_colors,
+                color_search_index,
+                colorblind_safe=True,
+                cvd_type=cvd_type,
+                cvd_severity=cvd_severity,
+                n_iter=optimize_palette_n_iter,
+                search_radius=optimize_palette_search_radius,
+            )
+        else:
+            palette = optimize_existing_palette(
+                palette,
+                colors,
+                colors,
+                color_search_index,
+                n_iter=optimize_palette_n_iter,
+                search_radius=optimize_palette_search_radius,
+            )
         return get_rgb_palette(palette, as_hex=as_hex)
     else:
 
@@ -410,14 +424,29 @@ def extend_palette(
 
     if optimize_palette:
         color_search_index = NearestNeighbors().fit(colors)
-        palette = optimize_existing_palette(
-            palette,
-            colors,
-            color_search_index,
-            movable_colors=list(range(initial_palette_size, len(palette))),
-            n_iter=optimize_palette_n_iter,
-            search_radius=optimize_palette_search_radius,
-        )
+        if colorblind_safe:
+            palette = optimize_existing_palette(
+                palette,
+                colors,
+                cvd_colors,
+                color_search_index,
+                colorblind_safe=True,
+                cvd_type=cvd_type,
+                cvd_severity=cvd_severity,
+                movable_colors=list(range(initial_palette_size, len(palette))),
+                n_iter=optimize_palette_n_iter,
+                search_radius=optimize_palette_search_radius,
+            )
+        else:
+            palette = optimize_existing_palette(
+                palette,
+                colors,
+                colors,
+                color_search_index,
+                movable_colors=list(range(initial_palette_size, len(palette))),
+                n_iter=optimize_palette_n_iter,
+                search_radius=optimize_palette_search_radius,
+            )
         return get_rgb_palette(palette, as_hex=as_hex)
     else:
         palette = get_rgb_palette(palette, as_hex=as_hex)
@@ -607,7 +636,7 @@ def create_block_palette(
     theme_color_spacing = 0.2,
     as_hex: bool = True,
     optimize_palette: bool = True,
-    optimize_palette_n_iter: int = 100,
+    optimize_palette_n_iter: int = 10,
     optimize_palette_search_radius: int = 5,
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks using the Glasbey algorithm.
@@ -779,10 +808,11 @@ def create_block_palette(
 
         palette.extend(block.tolist())
 
-    if optimize_palette:
+    if optimize_palette and not colorblind_safe:
         color_search_index = NearestNeighbors().fit(colors)
         palette = optimize_existing_palette(
             np.asarray(palette),
+            colors,
             colors,
             color_search_index,
             n_iter=optimize_palette_n_iter,
@@ -809,8 +839,8 @@ def extend_block_palette(
     theme_color_spacing = 0.2,
     as_hex: bool = True,
     optimize_palette: bool = True,
-    optimize_palette_n_iter: int = 30,
-    optimize_palette_search_radius: int = 3,
+    optimize_palette_n_iter: int = 5,
+    optimize_palette_search_radius: int = 2,
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Extend an existing block color palette with new blocks using the Glasbey algorithm.
     This should generate a palette that maximizes the perceptual distances between blocks in the palette up to the
@@ -892,7 +922,7 @@ def extend_block_palette(
         The resulting palette with blocks of theme palette of the specified block sizes.
     """
     try:
-        palette = palette_to_sRGB1(palette)
+        palette = palette_to_sRGB1(palette, max_colors=20)
     except:
         raise ValueError(
             "Failed to parse the palette to be extended. Is it formatted correctly?"
@@ -1020,10 +1050,11 @@ def extend_block_palette(
 
         result_palette.extend(block.tolist())
 
-    if optimize_palette:
+    if optimize_palette and not colorblind_safe:
         color_search_index = NearestNeighbors().fit(colors)
         result_palette = optimize_existing_palette(
             np.asarray(result_palette),
+            colors,
             colors,
             color_search_index,
             movable_colors=list(range(initial_palette_size, len(result_palette))),
