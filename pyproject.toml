@@ -29,6 +29,9 @@ dependencies = [
     "scikit-learn>=1.1",
 ]
 
+[dependency-groups]
+cicd = ["pytest", "pytest-azurepipelines", "pytest-cov"]
+
 [tool.setuptools]
 zip-safe = false
 packages = ["glasbey"]
