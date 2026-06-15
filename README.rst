@@ -84,6 +84,10 @@ Creating new categorical colour palettes is as easy as single function call.
     # Create a muted palette with 12 colours
     glasbey.create_palette(palette_size=12, lightness_bounds=(20, 40), chroma_bounds=(40, 50))
 
+    # Make it accessible as a matplotlib colormap
+    from matplotlib.colors import ListedColormap
+    cmap = ListedColormap(glasbey.create_palette())
+
 It is also easy to extend an existing palette, or create a new palette from some seed colours.
 
 .. code:: python3
