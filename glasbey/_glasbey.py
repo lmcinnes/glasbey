@@ -4,10 +4,10 @@
 import numpy as np
 
 from colorspacious import cspace_convert
-from matplotlib.colors import rgb2hex, to_rgb, LinearSegmentedColormap
-from sklearn.neighbors import NearestNeighbors
+from matplotlib.colors import to_rgb
 
 from ._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
+from ._kdtree import KDTree3D
 from ._internals import (
     generate_palette_cam02ucs,
     get_next_color,
@@ -188,7 +188,7 @@ def create_palette(
 
     if optimize_palette:
         palette = palette[2:]
-        color_search_index = NearestNeighbors().fit(colors)
+        color_search_index = KDTree3D(colors)
         if colorblind_safe:
             palette = optimize_existing_palette(
                 palette,
@@ -423,7 +423,7 @@ def extend_palette(
         )
 
     if optimize_palette:
-        color_search_index = NearestNeighbors().fit(colors)
+        color_search_index = KDTree3D(colors)
         if colorblind_safe:
             palette = optimize_existing_palette(
                 palette,
@@ -458,7 +458,7 @@ def create_theme_palette(
     palette_size: int = 5,
     *,
     color_grid: Optional[np.ndarray] = None,
-    color_search_index: Optional[NearestNeighbors] = None,
+    color_search_index: Optional[KDTree3D] = None,
     lightness_bounds: Tuple[float, float] = (10.0, 90.0),
     chroma_bounds: Tuple[float, float] = (10.0, 90.0),
     hue_bounds: Tuple[float, float] = (0.0, 360),
@@ -533,9 +533,7 @@ def create_theme_palette(
         )
 
     if color_search_index is None:
-        color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-            color_grid
-        )
+        color_search_index = KDTree3D(color_grid)
 
     if other_colors is None:
         other_colors = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS")
@@ -556,20 +554,8 @@ def create_theme_palette(
         )
     )
 
-    left = color_grid[
-        np.squeeze(
-            color_search_index.kneighbors(
-                [base_color - left_offset], return_distance=False
-            )
-        )
-    ]
-    right = color_grid[
-        np.squeeze(
-            color_search_index.kneighbors(
-                [base_color + right_offset], return_distance=False
-            )
-        )
-    ]
+    left = color_grid[color_search_index.query_1nn(base_color - left_offset)]
+    right = color_grid[color_search_index.query_1nn(base_color + right_offset)]
 
     left = optimize_endpoint_color(left, other_colors, color_grid, color_search_index, base_color - left)
     right = optimize_endpoint_color(right, other_colors, color_grid, color_search_index, base_color - right)
@@ -593,9 +579,7 @@ def create_theme_palette(
 
     for anneal_val in np.linspace(1, 0, 10):
         candidate_colors = np.asarray([p(xs) for p in polynomial]).T
-        indices = np.squeeze(
-            color_search_index.kneighbors(candidate_colors, return_distance=False)
-        )
+        indices = color_search_index.query_1nn_batch(candidate_colors)
         candidate_colors = color_grid[indices]
 
         dists = np.hstack(
@@ -748,9 +732,7 @@ def create_block_palette(
         )
 
     sub_grid = colors[(colors[:, 0] >= 40) & (colors[:, 0] <= 70)]
-    color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-        colors
-    )
+    color_search_index = KDTree3D(colors)
 
     if colorblind_safe:
         cvd_space = {
@@ -809,7 +791,7 @@ def create_block_palette(
         palette.extend(block.tolist())
 
     if optimize_palette and not colorblind_safe:
-        color_search_index = NearestNeighbors().fit(colors)
+        color_search_index = KDTree3D(colors)
         palette = optimize_existing_palette(
             np.asarray(palette),
             colors,
@@ -984,9 +966,7 @@ def extend_block_palette(
         )
 
     sub_grid = colors[(colors[:, 0] >= 40) & (colors[:, 0] <= 70)]
-    color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-        colors
-    )
+    color_search_index = KDTree3D(colors)
 
     if colorblind_safe:
         cvd_space = {
@@ -1051,7 +1031,7 @@ def extend_block_palette(
         result_palette.extend(block.tolist())
 
     if optimize_palette and not colorblind_safe:
-        color_search_index = NearestNeighbors().fit(colors)
+        color_search_index = KDTree3D(colors)
         result_palette = optimize_existing_palette(
             np.asarray(result_palette),
             colors,

@@ -1,10 +1,10 @@
 import numpy as np
 import numba
 import colorspacious
-from sklearn.metrics import pairwise_distances
-from sklearn.neighbors import NearestNeighbors
 
 from typing import Optional, List, Literal
+
+from ._kdtree import KDTree3D, min_pairwise_distances
 
 BLACK = colorspacious.cspace_convert([0, 0, 0], "sRGB1", "CAM02-UCS")
 WHITE = colorspacious.cspace_convert([1, 1, 1], "sRGB1", "CAM02-UCS")
@@ -33,9 +33,7 @@ def optimize_endpoint_color(
 
         direction /= np.sqrt(np.sum(direction**2))
         color += val * (direction)
-        color = cam_grid[
-            np.squeeze(cam_grid_index.kneighbors([color], return_distance=False))
-        ]
+        color = cam_grid[cam_grid_index.query_1nn(color)]
         distances = np.sqrt(np.sum((other_colors - color) ** 2, axis=1))
         closest_idx = np.argmin(distances)
         closest_color = other_colors[closest_idx]
@@ -83,7 +81,7 @@ def find_best_replacement(
     perceptual_palette: np.ndarray,
     cam_grid: np.ndarray,
     perceptual_grid: np.ndarray,
-    cam_grid_index: NearestNeighbors,
+    cam_grid_index: KDTree3D,
     search_radius: int = 10,
     avoid_black_white: bool = True,
 ):
@@ -92,12 +90,10 @@ def find_best_replacement(
     if avoid_black_white:
         remaining_colors = np.vstack([remaining_colors, BLACK, WHITE])
 
-    neighbor_indices = cam_grid_index.radius_neighbors(
-        [color], radius=search_radius, return_distance=False
-    )[0]
+    neighbor_indices = cam_grid_index.query_radius(color, search_radius)
     true_neighbors = cam_grid[neighbor_indices]
     perceptual_neighbors = perceptual_grid[neighbor_indices]
-    min_distances = pairwise_distances(perceptual_neighbors, remaining_colors).min(axis=1)
+    min_distances = min_pairwise_distances(perceptual_neighbors, remaining_colors)
     best_neighbor_idx = np.argmax(min_distances)
     return (min_distances[best_neighbor_idx], true_neighbors[best_neighbor_idx], perceptual_neighbors[best_neighbor_idx], color_index)
 
@@ -106,7 +102,7 @@ def optimize_existing_palette(
     cam_palette: np.ndarray,
     cam_grid: np.ndarray,
     perceptual_grid: np.ndarray,
-    cam_grid_index: NearestNeighbors,
+    cam_grid_index: KDTree3D,
     movable_colors: Optional[List[int]] = None,
     avoid_black_white: bool = True,
     search_radius: float = 10,
@@ -132,7 +128,7 @@ def optimize_existing_palette(
         The perceptual grid to use for nearest neighbor searches, shape (n_grid_points, 3).
         If using a colorblind-safe palette, this should be the colorblind perceptual grid.
 
-    cam_grid_index : NearestNeighbors
+    cam_grid_index : KDTree3D
         The nearest neighbors index for the CAM02-UCS grid.
 
     movable_colors : list or None
