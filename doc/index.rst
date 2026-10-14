@@ -24,7 +24,8 @@ you don't want to re-use or cycle the palette; perhaps you have specific constra
 certain look to your palette. Fortunately we can use math and perceptual colour spaces to create new palettes that
 maximize the perceptual visual distinctiveness of colours within constraints. It is also easy to extend an
 existing palette, or seed a created palette with some initial colours (perhaps your company or institutions colours).
-Lastly, glasbey makes it easy to generate block palettes, suitable for working with hierarchical categories.
+Lastly, glasbey makes it easy to generate block palettes, suitable for working with hierarchical categories, and
+continuous colormaps that pass through chosen colours while remaining perceptually uniform.
 
 -----------
 Basic Usage
@@ -62,6 +63,8 @@ Glasbey requires:
  * numpy
  * colorspacious
  * matplotlib
+ * scikit-learn
+ * scipy
 
 Glasbey can be installed via pip:
 
@@ -82,6 +85,7 @@ User Guide
    extending_palettes
    creating_block_palettes
    color_vision_deficiency
+   continuous_colormaps
    api
 
 ----------------
