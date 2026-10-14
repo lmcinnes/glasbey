@@ -1,9 +1,12 @@
 Glasbey API Reference
 =====================
 
-Glasbey consist of three major functions, documented here.
+Glasbey consists of the following public API, documented here.
 
 .. automodule:: glasbey
    :imported-members:
-   :members: create_palette, extend_palette, create_block_palette
+   :members: create_palette, extend_palette, create_block_palette, create_colormap
+
+.. autoclass:: glasbey.ContinuousColormap
+   :members: __call__, sample, to_matplotlib
 

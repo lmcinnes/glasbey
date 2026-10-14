@@ -109,3 +109,15 @@ def test_bad_params():
     grid = rgb_grid(64)
     with pytest.raises(ValueError):
         constrain_by_lightness_chroma_hue(grid, "sRGB1", hue_bounds=(300, 90), output_colorspace="fish")
+
+
+@pytest.mark.parametrize("grid_size", [8, (4, 5, 8)])
+def test_wrapped_hue_grid_matches_filter(grid_size):
+    grid = jch_grid(grid_size, hue_bounds=(350, 20))
+    assert np.all((grid[:, 2] >= 350) | (grid[:, 2] <= 20))
+    filtered = constrain_by_lightness_chroma_hue(
+        grid, "JCh", output_colorspace="JCh", hue_bounds=(350, 20)
+    )
+    np.testing.assert_array_equal(grid, filtered)
+    unwrapped = np.unique((grid[:, 2] - 350) % 360)
+    np.testing.assert_allclose(unwrapped, np.linspace(0, 30, 8), atol=2e-5)

@@ -95,6 +95,17 @@ It is also easy to extend an existing palette, or create a new palette from some
     # Seed a palette with some initial colours
     glasbey.extend_palette(["#2a3e63", "#7088b8", "#fcaf3e", "#b87088"], palette_size=8)
 
+Continuous colormaps can be fitted through chosen colours, staying perceptually uniform.
+
+.. code:: python3
+
+    import glasbey
+
+    # A sequential colormap through three colours, as a matplotlib colormap
+    glasbey.create_colormap(["#2a3e63", "#7088b8", "#fcaf3e"]).to_matplotlib()
+    # A diverging colormap centred on the lightest colour
+    glasbey.create_colormap(["#426ba0", "#eee8e0", "#a35742"], mode="diverging")
+
 ------------
 Installation
 ------------
@@ -105,6 +116,8 @@ Glasbey requires:
  * numpy
  * colorspacious
  * matplotlib
+ * scikit-learn
+ * scipy
 
 Glasbey can be installed via pip:
 

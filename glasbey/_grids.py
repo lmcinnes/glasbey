@@ -127,6 +127,7 @@ def jch_grid(
         The grid converted to the specified output colour space. If the output space is not JCh then all colors
         not representable in a standard sRGB1 color space will be removed.
     """
+    hue_stop = hue_bounds[1] + (360 if hue_bounds[0] > hue_bounds[1] else 0)
     if type(grid_size) is int:
         c = np.repeat(
             np.linspace(chroma_bounds[0], chroma_bounds[1], grid_size), grid_size**2
@@ -139,7 +140,7 @@ def jch_grid(
             grid_size,
         )
         h = np.tile(
-            np.linspace(hue_bounds[0], hue_bounds[1], grid_size), grid_size**2
+            np.linspace(hue_bounds[0], hue_stop, grid_size), grid_size**2
         )
     elif hasattr(grid_size, "__len__") and len(grid_size) == 3:  # type: ignore
         c = np.repeat(
@@ -154,7 +155,7 @@ def jch_grid(
             grid_size[1],  # type: ignore
         )
         h = np.tile(
-            np.linspace(hue_bounds[0], hue_bounds[1], grid_size[2]),  # type: ignore
+            np.linspace(hue_bounds[0], hue_stop, grid_size[2]),  # type: ignore
             grid_size[0] * grid_size[1],  # type: ignore
         )
     else:
@@ -162,6 +163,8 @@ def jch_grid(
             "Parameter grid_size should either be an integer or a triple of integers (j_size, c_size, h_size)"
         )
 
+    if hue_bounds[0] > hue_bounds[1]:
+        h %= 360
     jch_colors = np.vstack([j, c, h]).T
 
     if output_colorspace == "JCh":
@@ -179,6 +182,26 @@ def jch_grid(
             )
         except ValueError:
             raise ValueError(f"Invalid output colorspace {output_colorspace}")
+
+
+def _jch_bounds_mask(
+    colors,
+    lightness_bounds=(10, 90),
+    chroma_bounds=(10, 90),
+    hue_bounds=(0, 360),
+):
+    mask = np.ones(colors.shape[0], dtype=np.bool_)
+    if lightness_bounds is not None:
+        mask &= (colors[:, 0] >= lightness_bounds[0]) & (
+            colors[:, 0] <= lightness_bounds[1]
+        )
+    if chroma_bounds is not None:
+        mask &= (colors[:, 1] >= chroma_bounds[0]) & (colors[:, 1] <= chroma_bounds[1])
+    if hue_bounds[0] > hue_bounds[1]:
+        mask &= (colors[:, 2] >= hue_bounds[0]) | (colors[:, 2] <= hue_bounds[1])
+    else:
+        mask &= (colors[:, 2] >= hue_bounds[0]) & (colors[:, 2] <= hue_bounds[1])
+    return mask
 
 
 def constrain_by_lightness_chroma_hue(
@@ -221,16 +244,7 @@ def constrain_by_lightness_chroma_hue(
     if current_colorspace != "JCh":
         colors = cspace_convert(colors, current_colorspace, "JCh")
 
-    mask = np.ones(colors.shape[0], dtype=np.bool_)
-
-    mask &= (colors[:, 0] >= lightness_bounds[0]) & (
-        colors[:, 0] <= lightness_bounds[1]
-    )
-    mask &= (colors[:, 1] >= chroma_bounds[0]) & (colors[:, 1] <= chroma_bounds[1])
-    if hue_bounds[0] > hue_bounds[1]:
-        mask &= (colors[:, 2] >= hue_bounds[0]) | (colors[:, 2] <= hue_bounds[1])
-    else:
-        mask &= (colors[:, 2] >= hue_bounds[0]) & (colors[:, 2] <= hue_bounds[1])
+    mask = _jch_bounds_mask(colors, lightness_bounds, chroma_bounds, hue_bounds)
 
     colors = np.ascontiguousarray(colors[mask])
 
