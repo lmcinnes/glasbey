@@ -80,6 +80,27 @@ def test_extend_palette_inferred_bounds(
     assert np.all(jch_palette[8:, 2] <= np.max(jch_palette[:8, 2]))
 
 
+@pytest.mark.parametrize("palette_size", [1, 5, 10])
+@pytest.mark.parametrize("colorblind_safe", [False, True])
+@pytest.mark.parametrize("optimize_palette", [False, True])
+def test_extend_palette_not_larger_than_input(
+    palette_size, colorblind_safe, optimize_palette
+):
+    initial_palette = palette_to_sRGB1("tab10")
+    palette = extend_palette(
+        "tab10",
+        palette_size,
+        colorblind_safe=colorblind_safe,
+        optimize_palette=optimize_palette,
+        as_hex=False,
+    )
+
+    assert len(palette) == palette_size
+    np.testing.assert_allclose(
+        palette, np.asarray(initial_palette)[:palette_size], atol=1e-3
+    )
+
+
 def test_theme_palette_distances_small():
     base_color = np.clip(np.random.random(3), 0.4, 0.6)
     palette = create_theme_palette(base_color)
@@ -171,3 +192,24 @@ def test_block_palette_colorblind():
 
     # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
     assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))
+
+
+def test_palette_to_sRGB1_mixed_int_float_channels():
+    # A float triple that happens to contain integer channels is still 0-1 scaled
+    result = palette_to_sRGB1([(1.0, 0.5, 0), (0, 0.4, 0.8)])
+    np.testing.assert_allclose(result, [(1.0, 0.5, 0.0), (0.0, 0.4, 0.8)], atol=1e-6)
+
+    # All-integer triples and values above 1 are still read as 0-255
+    result = palette_to_sRGB1([(255, 128, 0), (0.0, 102.0, 204.0)])
+    np.testing.assert_allclose(
+        result, [(1.0, 128 / 255, 0.0), (0.0, 0.4, 0.8)], atol=1e-6
+    )
+    
+    
+def test_public_names_in_all():
+    import glasbey
+
+    assert sorted(glasbey.__all__) == sorted(set(glasbey.__all__))
+    for name in glasbey.__all__:
+        assert callable(getattr(glasbey, name))
+    assert "extend_block_palette" in glasbey.__all__

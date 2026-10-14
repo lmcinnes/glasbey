@@ -73,7 +73,7 @@ def palette_to_sRGB1(palette, max_colors=12):
             if type(color) is str:
                 result.append(to_rgb(color))
             elif hasattr(color, '__len__') and len(color) == 3 or len(color) == 4:
-                if any([isinstance(channel, (int, integer)) for channel in color]) or max(color) > 1.0:
+                if all(isinstance(channel, (int, integer)) for channel in color) or max(color) > 1.0:
                     color = asarray(color, dtype=float32) / 255
 
                 result.append(to_rgb(color))
