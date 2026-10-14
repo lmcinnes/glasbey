@@ -171,3 +171,12 @@ def test_block_palette_colorblind():
 
     # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
     assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))
+
+
+def test_public_names_in_all():
+    import glasbey
+
+    assert sorted(glasbey.__all__) == sorted(set(glasbey.__all__))
+    for name in glasbey.__all__:
+        assert callable(getattr(glasbey, name))
+    assert "extend_block_palette" in glasbey.__all__
