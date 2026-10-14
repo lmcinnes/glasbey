@@ -183,3 +183,12 @@ def test_palette_to_sRGB1_mixed_int_float_channels():
     np.testing.assert_allclose(
         result, [(1.0, 128 / 255, 0.0), (0.0, 0.4, 0.8)], atol=1e-6
     )
+    
+    
+def test_public_names_in_all():
+    import glasbey
+
+    assert sorted(glasbey.__all__) == sorted(set(glasbey.__all__))
+    for name in glasbey.__all__:
+        assert callable(getattr(glasbey, name))
+    assert "extend_block_palette" in glasbey.__all__
