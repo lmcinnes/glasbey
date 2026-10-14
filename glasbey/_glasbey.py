@@ -391,6 +391,13 @@ def extend_palette(
             f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
         )
 
+    if palette_size <= initial_palette_size:
+        # Nothing to add; return the leading colors of the given palette.
+        palette = cspace_convert(
+            np.asarray(palette[:palette_size]), "sRGB1", "CAM02-UCS"
+        )
+        return get_rgb_palette(palette, as_hex=as_hex)
+
     if not colorblind_safe:
         palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
             np.float32, order="C"
