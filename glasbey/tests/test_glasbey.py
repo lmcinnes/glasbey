@@ -194,6 +194,18 @@ def test_block_palette_colorblind():
     assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))
 
 
+def test_palette_to_sRGB1_mixed_int_float_channels():
+    # A float triple that happens to contain integer channels is still 0-1 scaled
+    result = palette_to_sRGB1([(1.0, 0.5, 0), (0, 0.4, 0.8)])
+    np.testing.assert_allclose(result, [(1.0, 0.5, 0.0), (0.0, 0.4, 0.8)], atol=1e-6)
+
+    # All-integer triples and values above 1 are still read as 0-255
+    result = palette_to_sRGB1([(255, 128, 0), (0.0, 102.0, 204.0)])
+    np.testing.assert_allclose(
+        result, [(1.0, 128 / 255, 0.0), (0.0, 0.4, 0.8)], atol=1e-6
+    )
+    
+    
 def test_public_names_in_all():
     import glasbey
 
