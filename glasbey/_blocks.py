@@ -328,6 +328,7 @@ class _Placed:
         self._trees = None
 
     def remove(self, owner):
+        self._minima = None
         keep = self.owner != owner
         self.points = self.points[keep]
         if self.context.colorblind_safe:
@@ -346,19 +347,57 @@ class _Placed:
             self._trees[which] = cKDTree(points * self._scale) if len(points) else None
         return self._trees[which]
 
-    def score(self, footprints, cvd_footprints=None):
-        """Minimum separation of each candidate footprint (k, m, 3) from everything placed."""
-        result = self._score(footprints, self._tree("normal"), self.extremes)
+    def score(self, footprints, cvd_footprints=None, extremes=None, key=None):
+        """Minimum separation of each candidate footprint (k, m, 3) from everything placed.
+
+        ``extremes`` optionally gives precomputed distances to black and white
+        (normal, CVD). With a ``key`` the per-point minima are kept and updated
+        incrementally as points are added, as in Glasbey's algorithm.
+        """
+        extremes = extremes or (None, None)
+        result = self._running(footprints, "normal", key, extremes[0], self.extremes)
         if self.context.colorblind_safe:
             if cvd_footprints is None:
                 cvd_footprints = self.context.cvd(footprints)
-            result = np.minimum(
-                result, self._score(cvd_footprints, self._tree("cvd"), self.cvd_extremes)
-            )
+            result = np.minimum(result, self._running(
+                cvd_footprints, "cvd", key, extremes[1], self.cvd_extremes))
         return result
 
-    def _score(self, footprints, tree, extremes):
-        to_extremes = np.linalg.norm(footprints[..., None, :] - extremes, axis=-1).min(axis=(-1, -2))
+    def _running(self, footprints, which, key, to_extremes, extremes):
+        points = self.points if which == "normal" else self.cvd_points
+        if key is None:
+            return self._score(footprints, self._tree(which), extremes, to_extremes)
+        if self._minima is None:
+            self._minima = {}
+        state = self._minima.get((key, which))
+        if state is None:
+            if to_extremes is None:
+                to_extremes = self.extreme_distances(footprints, extremes)
+            minima = np.broadcast_to(to_extremes[:, None], footprints.shape[:-1]).copy()
+            seen = 0
+        else:
+            seen, minima = state
+        if seen < len(points):
+            new = points[seen:]
+            if len(new) > 32:
+                tree = cKDTree(new * self._scale)
+                distances = tree.query((footprints * self._scale).reshape(-1, 3))[0]
+                distances = distances.reshape(footprints.shape[:-1])
+            else:
+                distances = discounted_distance(footprints, new).min(axis=-1)
+            minima = np.minimum(minima, distances)
+        self._minima[(key, which)] = (len(points), minima)
+        return minima.min(axis=-1)
+
+    _minima = None
+
+    @staticmethod
+    def extreme_distances(footprints, extremes):
+        return np.linalg.norm(footprints[..., None, :] - extremes, axis=-1).min(axis=(-1, -2))
+
+    def _score(self, footprints, tree, extremes, to_extremes=None):
+        if to_extremes is None:
+            to_extremes = self.extreme_distances(footprints, extremes)
         if tree is None:
             return to_extremes
         flat = (footprints * self._scale).reshape(-1, 3)
@@ -367,21 +406,38 @@ class _Placed:
         return np.minimum(to_points, to_extremes)
 
 
+_EXTREMES = None
+
+
+def _extremes():
+    global _EXTREMES
+    if _EXTREMES is None:
+        _EXTREMES = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS")
+    return _EXTREMES
+
+
 def _cached_footprints(context, key, build):
+    """Candidate footprints with their CVD simulation and distances to black and white."""
     cache = context.diagnostics.setdefault("_footprint_cache", {})
     if key not in cache:
-        footprints = build()
+        built = build()
+        footprints = built[0] if isinstance(built, tuple) else built
         simulated = context.cvd(footprints) if context.colorblind_safe else None
-        cache[key] = (footprints, simulated)
+        extremes = (
+            _Placed.extreme_distances(footprints, _extremes()),
+            _Placed.extreme_distances(simulated, _extremes()) if simulated is not None else None,
+        )
+        cache[key] = (built, simulated, extremes)
     return cache[key]
 
 
 def _place_long(spec, context, placed, sweep, twist):
-    points, hues, valid = helix_footprints(spec, context, sweep, twist)
-    simulated = _cached_footprints(
-        context, ("long", spec.length, round(float(sweep), 6), twist), lambda: points
-    )[1]
-    scores = np.where(valid, placed.score(points, simulated), -np.inf)
+    (points, hues, valid), simulated, extremes = _cached_footprints(
+        context, ("long", spec.length, round(float(sweep), 6), twist),
+        lambda: helix_footprints(spec, context, sweep, twist),
+    )
+    key = ("long", spec.length, round(float(sweep), 6), twist)
+    scores = np.where(valid, placed.score(points, simulated, extremes, key), -np.inf)
     best = int(np.argmax(scores))
     footprint = points[best]
     centre = footprint[HELIX_POINTS // 2]
@@ -395,11 +451,12 @@ def _place_long(spec, context, placed, sweep, twist):
 
 def _place_short(spec, context, placed, sweep, twist, exclude=()):
     centres, centre_jch = short_candidates(context)
-    footprints, simulated = _cached_footprints(
+    footprints, simulated, extremes = _cached_footprints(
         context, (spec.kind, spec.length, round(float(sweep), 6), twist),
         lambda: short_footprints(spec, centres, centre_jch, context, sweep, twist),
     )
-    raw = placed.score(footprints, simulated)
+    raw = placed.score(footprints, simulated, extremes,
+                       (spec.kind, spec.length, round(float(sweep), 6), twist))
     crowded = False
     widen = 0.0
     while True:
@@ -468,6 +525,17 @@ YELLOW_HUE = 100.0
 def rebuild_footprint(spec, footprint, context, sweep, twist=None, position=None):
     """Recompute a footprint at the same (or a new) position with a new sweep."""
     twist = footprint.twist if twist is None else twist
+    if position is None:
+        position = footprint.hue if spec.kind == "long" else footprint.base
+    key = (spec.kind, spec.length, round(float(sweep), 9), twist,
+           tuple(np.round(np.atleast_1d(position), 9)))
+    cache = context.diagnostics.setdefault("_rebuild_cache", {})
+    if key not in cache:
+        cache[key] = _rebuild_footprint(spec, footprint, context, sweep, twist, position)
+    return cache[key]
+
+
+def _rebuild_footprint(spec, footprint, context, sweep, twist, position):
     if spec.kind == "long":
         hue = footprint.hue if position is None else float(position)
         points = helix_footprints(spec, context, sweep, twist, hues=[hue])[0][0]
@@ -508,17 +576,20 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
     share = usable_share(len(chromatic), context.lightness_bounds)
     hues = np.array([footprint.hue for footprint in footprints])
     extents = [_lightness_extent(footprint) for footprint in footprints]
+    chromatic_array = np.array(chromatic, dtype=int)
+    low = np.array([extent[0] for extent in extents])
+    high = np.array([extent[1] for extent in extents])
     for i in chromatic:
-        neighbours = [
-            j for j in chromatic if j != i
-            and min(extents[i][1], extents[j][1]) > max(extents[i][0], extents[j][0])
-        ]
-        if not neighbours:
+        others = chromatic_array[chromatic_array != i]
+        overlap = np.minimum(high[i], high[others]) > np.maximum(low[i], low[others])
+        neighbours = others[overlap]
+        if not len(neighbours):
             sweeps[i] = demand[i]
             continue
+        offsets = hue_offset(hues[neighbours], hues[i])
         halves = []
         for direction in (twist, -twist):  # the light end's gap, then the dark end's gap
-            gaps = [(direction * hue_offset(hues[j], hues[i])) % 360 for j in neighbours]
+            gaps = (direction * offsets) % 360
             nearest = int(np.argmin(gaps))
             gap, j = gaps[nearest], neighbours[nearest]
             fraction = demand[i] / max(demand[i] + demand[j], 1e-9)
@@ -547,14 +618,10 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
 def _pair_minima(footprints, w_j=LIGHTNESS_DISCOUNT):
     """(K, K) matrix of minimum discounted distances between footprints (inf on the diagonal)."""
     points = np.vstack([footprint.points for footprint in footprints])
-    owner = np.concatenate([np.full(len(f.points), i) for i, f in enumerate(footprints)])
+    starts = np.cumsum([0] + [len(footprint.points) for footprint in footprints[:-1]])
     distances = discounted_distance(points, points, w_j)
-    count = len(footprints)
-    result = np.full((count, count), np.inf)
-    for i in range(count):
-        rows = distances[owner == i]
-        for j in range(i + 1, count):
-            result[i, j] = result[j, i] = rows[:, owner == j].min()
+    result = np.minimum.reduceat(np.minimum.reduceat(distances, starts, axis=0), starts, axis=1)
+    np.fill_diagonal(result, np.inf)
     return result
 
 
@@ -622,14 +689,15 @@ def refine(specs, footprints, info, context, reserved, twist, fixed_colors=None,
     for round_ in range(rounds):
         improved = False
         moves = []
-        for i in range(len(specs)):
-            for j in range(i + 1, len(specs)):
-                if specs[i].kind == specs[j].kind and specs[i].size != specs[j].size:
-                    moves.append(("swap", i, j))
-        # Only blocks in the closest pairs can raise the minimum separation.
+        # Only moves touching blocks in the closest pairs can raise the minimum separation.
         minima = _pair_minima(footprints) if len(footprints) > 1 else np.zeros((1, 1))
         order = np.argsort(minima, axis=None)[: 2 * REFINE_PAIRS]
         involved = {int(k) for flat in order for k in np.unravel_index(flat, minima.shape)}
+        for i in range(len(specs)):
+            for j in range(i + 1, len(specs)):
+                if (i in involved or j in involved) and specs[i].kind == specs[j].kind \
+                        and specs[i].size != specs[j].size:
+                    moves.append(("swap", i, j))
         for i, details in enumerate(info):
             if i not in involved:
                 continue
@@ -716,22 +784,28 @@ class _BlockState:
         return self.theme.arc(positions)
 
 
+def _minimum_between(blocks, fixed=None):
+    """Minimum discounted distance between colours of different blocks (and fixed colours)."""
+    points = np.vstack(blocks)
+    starts = np.cumsum([0] + [len(block) for block in blocks[:-1]])
+    best = np.inf
+    if len(blocks) > 1:
+        distances = discounted_distance(points, points)
+        minima = np.minimum.reduceat(np.minimum.reduceat(distances, starts, axis=0), starts, axis=1)
+        np.fill_diagonal(minima, np.inf)
+        best = float(minima.min())
+    if fixed is not None and len(fixed):
+        best = min(best, float(discounted_distance(points, fixed).min()))
+    return best
+
+
 def palette_separation(blocks, context, fixed_colors=None):
     """Global minimum lightness-discounted between-block distance (min with CVD if enabled)."""
-    def minimum(blocks, fixed):
-        best = np.inf
-        for i in range(len(blocks)):
-            for j in range(i + 1, len(blocks)):
-                best = min(best, float(discounted_distance(blocks[i], blocks[j]).min()))
-            if fixed is not None and len(fixed):
-                best = min(best, float(discounted_distance(blocks[i], fixed).min()))
-        return best
-
-    result = minimum(blocks, fixed_colors)
+    result = _minimum_between(blocks, fixed_colors)
     if context.colorblind_safe:
         simulated = [context.cvd(block) for block in blocks]
         fixed = context.cvd(fixed_colors) if fixed_colors is not None and len(fixed_colors) else None
-        result = min(result, minimum(simulated, fixed))
+        result = min(result, _minimum_between(simulated, fixed))
     return result
 
 
@@ -858,7 +932,7 @@ def blocks_to_output(states, as_hex=True):
     return output
 
 
-def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist="auto",
+def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist=1,
                         fixed_colors=None, refine_rounds=None, optimize=False, n_iter=10,
                         search_radius=5.0, **context_options):
     """Run the block-palette pipeline; return (CAM02-UCS colours, diagnostics).

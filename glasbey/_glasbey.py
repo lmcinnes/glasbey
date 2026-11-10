@@ -18,10 +18,10 @@ from ._converters import get_rgb_palette, palette_to_sRGB1
 from ._optimizers import optimize_existing_palette
 from . import _legacy_blocks
 from ._blocks import (
-    Footprint, _BlockState, blocks_to_output, build_block_palette, choose_twist, make_context,
+    _BlockState, blocks_to_output, build_block_palette, make_context,
     plan_blocks,
 )
-from ._curves import _Grid, _cam02ucs_to_jch
+from ._curves import _Grid
 from ._theme import DEFAULT_STEP, fit_theme_arc
 
 from typing import *
@@ -612,9 +612,7 @@ def create_theme_palette(
     if color_grid is not None and len(color_grid) >= 8:
         context.grid = _Grid.from_colors(context.domain, np.asarray(color_grid, dtype=float))
     spec = plan_blocks([palette_size], context, step)[0]
-    hue = float(_cam02ucs_to_jch(base)[2])
-    seed = Footprint(base[None], base, hue, spec.demand, 1, spec.kind)
-    twist = choose_twist([spec], [seed])
+    twist = 1
     theme = fit_theme_arc(
         base, palette_size, step=step, domain=context.domain, gamut=context.gamut, grid=context.grid,
         hue_allowance=(spec.demand / 2, spec.demand / 2), twist=twist, other_colors=other_colors,
@@ -640,7 +638,7 @@ def _build_block_palette_with_diagnostics(
     theme_step=None,
     theme_color_spacing=None,
     hue_sweep="auto",
-    twist="auto",
+    twist=1,
     as_hex=True,
     optimize_palette=True,
     optimize_palette_n_iter=10,
@@ -689,7 +687,7 @@ def create_block_palette(
     optimize_palette_search_radius: int = 5,
     theme_step: Optional[float] = None,
     hue_sweep: Union[Literal["auto"], float] = "auto",
-    twist: Union[Literal["auto"], int] = "auto",
+    twist: Union[Literal["auto"], int] = 1,
     theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks.
@@ -784,10 +782,11 @@ def create_block_palette(
         rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
         costs separation under colour vision deficiency.
 
-    twist: "auto", 1 or -1 (default "auto")
+    twist: 1, -1 or "auto" (default 1)
         The global direction in which the light ends of all blocks rotate: ``1`` toward increasing hue,
         ``-1`` toward decreasing hue. ``"auto"`` chooses the direction that sends the most light ends toward
-        yellow. All blocks share one direction, which packs blocks more tightly.
+        yellow. All blocks share one direction, which packs blocks more tightly; a fixed default keeps
+        palettes predictable.
 
     theme_method: "arc" or "legacy" (default "arc")
         ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block
@@ -847,7 +846,7 @@ def extend_block_palette(
     optimize_palette_search_radius: int = 2,
     theme_step: Optional[float] = None,
     hue_sweep: Union[Literal["auto"], float] = "auto",
-    twist: Union[Literal["auto"], int] = "auto",
+    twist: Union[Literal["auto"], int] = 1,
     theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Extend an existing palette with new blocks.
@@ -942,10 +941,11 @@ def extend_block_palette(
         rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
         costs separation under colour vision deficiency.
 
-    twist: "auto", 1 or -1 (default "auto")
+    twist: 1, -1 or "auto" (default 1)
         The global direction in which the light ends of all blocks rotate: ``1`` toward increasing hue,
         ``-1`` toward decreasing hue. ``"auto"`` chooses the direction that sends the most light ends toward
-        yellow. All blocks share one direction, which packs blocks more tightly.
+        yellow. All blocks share one direction, which packs blocks more tightly; a fixed default keeps
+        palettes predictable.
 
     theme_method: "arc" or "legacy" (default "arc")
         ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block
