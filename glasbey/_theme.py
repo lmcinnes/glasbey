@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 from colorspacious import CIECAM02Space
 from scipy.integrate import trapezoid
+from scipy.spatial.distance import cdist
 
 from ._curves import _Domain, _Grid, _SplineProblem, _cam02ucs_to_jch
 from ._grids import rgb_grid
@@ -28,7 +29,7 @@ GREY_CHROMA = 12.0
 HUE_WINDOW_PAD = 8.0
 ONE_SIDED_ROOM = 3.0
 CONTROL_POINTS = 6
-MAX_ITER = 40
+MAX_ITER = 30
 LENGTH_RETRIES = (1.0, 0.88, 0.75, 0.6)
 REACH_STRETCH = 1.15
 SIDE_SLACK = 0.85
@@ -52,10 +53,10 @@ def discounted_distance(a, b, w_j=LIGHTNESS_DISCOUNT):
     ``a`` has shape (..., 3) and ``b`` shape (p, 3); the result has shape (..., p).
     """
     a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
+    b = np.atleast_2d(np.asarray(b, dtype=float))
     weights = np.array([w_j, 1.0, 1.0])
-    difference = (a[..., None, :] - b) * weights
-    return np.sqrt(np.sum(difference**2, axis=-1))
+    flat = (a * weights).reshape(-1, 3)
+    return cdist(flat, b * weights).reshape(a.shape[:-1] + (len(b),))
 
 
 def hue_offset(hue, base_hue):
@@ -337,7 +338,24 @@ def _make_terms(base_jch, profile, chromatic, use_profile, length_target, slope,
     return objective, constraints
 
 
+_SEGMENT = np.linspace(0, 1, 33)[:, None]
+
+
 def _route(grid, start, end):
+    """Feasible monotone polyline from ``start`` to ``end``.
+
+    Tries the straight segment, then a single bend pulled toward the neutral
+    axis (cheap and usually enough on gamut surfaces), then the grid search.
+    """
+    if grid.domain.contains(start + _SEGMENT * (end - start)).all():
+        return np.vstack([start, end])
+    middle = (start + end) / 2
+    for pull in (0.85, 0.7, 0.5):
+        bend = np.array([middle[0], middle[1] * pull, middle[2] * pull])
+        if grid.domain.contains(np.vstack([
+            start + _SEGMENT * (bend - start), bend + _SEGMENT * (end - bend),
+        ])).all():
+            return np.vstack([start, bend, end])
     try:
         return grid.connect(start, end)
     except ValueError:

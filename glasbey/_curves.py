@@ -520,24 +520,69 @@ class _SplineProblem:
                 result.append(np.asarray(extra_constraints(self, batch, geometry)).reshape(count, -1))
             return np.concatenate(result, axis=1)
 
+        # SLSQP, its callback and the finite differences revisit the same points.
+        objective_memo, constraint_memo = {}, {}
+
+        def remember(memo, key, value):
+            if len(memo) > 64:
+                memo.clear()
+            memo[key] = value
+            return value
+
+        def raw_constraints(stack):
+            return constraints_batch(stack, safety=False)
+
         def perturbed(variables):
             steps = epsilon * np.maximum(1.0, np.abs(variables))
             return variables[None] + np.diag(steps), steps
 
         def objective(variables):
-            return float(objective_batch(variables[None])[0])
+            key = (len(self.mesh), variables.tobytes())
+            if key not in objective_memo:
+                remember(objective_memo, key, float(objective_batch(variables[None])[0]))
+            return objective_memo[key]
 
         def gradient(variables):
             stack, steps = perturbed(variables)
             values = objective_batch(np.vstack([variables[None], stack]))
+            remember(objective_memo, (len(self.mesh), variables.tobytes()), float(values[0]))
             return (values[1:] - values[0]) / steps
 
+        def safety_offsets():
+            # Safety margins only apply to the domain-margin block of the constraint vector.
+            margins = self.domain.margins(self.values[:1] @ self.fixed).shape[1]
+            offsets = np.zeros(constraint_size())
+            offsets[: self.values.shape[0] * margins] = np.repeat(self.safety[:, 0], margins)
+            return offsets
+
+        size_cache = {}
+
+        def constraint_size():
+            return size_cache["size"]
+
+        def raw(variables):
+            key = (len(self.mesh), variables.tobytes())
+            if key not in constraint_memo:
+                values = raw_constraints(variables[None])[0]
+                size_cache["size"] = len(values)
+                remember(constraint_memo, key, values)
+            return constraint_memo[key]
+
         def constraints(variables, safety=True):
-            return constraints_batch(variables[None], safety)[0]
+            values = raw(variables)
+            if not safety:
+                return values
+            mesh_size = len(self.mesh)
+            if size_cache.get("mesh") != mesh_size:
+                size_cache["mesh"] = mesh_size
+                size_cache["offsets"] = safety_offsets()
+            return values - size_cache["offsets"]
 
         def jacobian(variables):
             stack, steps = perturbed(variables)
-            values = constraints_batch(np.vstack([variables[None], stack]))
+            values = raw_constraints(np.vstack([variables[None], stack]))
+            size_cache["size"] = values.shape[1]
+            remember(constraint_memo, (len(self.mesh), variables.tobytes()), values[0])
             return ((values[1:] - values[0]) / steps[:, None]).T
 
         return self._run_slsqp(initial, max_iter, objective, constraints, reference_length,
