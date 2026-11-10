@@ -119,8 +119,12 @@ def test_theme_palette_bounds():
     rgb_palette = np.asarray([to_rgb(color) for color in palette])
     jch_palette = cspace_convert(rgb_palette, "sRGB1", "JCh")
 
-    assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
-    assert 0 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 60
+    # The arc method spaces colours 10 apart (CAM02-UCS) by default, so a
+    # 5-colour theme spans at least 60% of (n - 1) * step in lightness.
+    step, n = 10.0, len(palette)
+    assert np.abs(jch_palette[0, 0] - jch_palette[-1, 0]) >= 0.6 * (n - 1) * step
+    assert np.all((jch_palette[:, 0] >= 10 - 0.5) & (jch_palette[:, 0] <= 90 + 0.5))
+    assert np.all((jch_palette[:, 1] >= 10 - 0.5) & (jch_palette[:, 1] <= 90 + 0.5))
 
 
 @pytest.mark.parametrize(

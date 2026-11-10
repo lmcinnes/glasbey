@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import glasbey
-from glasbey import _glasbey
+from glasbey import _legacy_blocks
 
 FIXTURES = Path(__file__).resolve().parents[1] / "glasbey" / "tests" / "fixtures"
 
@@ -57,6 +57,7 @@ if __name__ == "__main__":
         json.dumps(colormap_fixtures(glasbey.create_colormap), indent=1)
     )
     (FIXTURES / "legacy_blocks_0_4_0.json").write_text(json.dumps(block_fixtures(
-        _glasbey.create_block_palette, _glasbey.extend_block_palette, _glasbey.create_theme_palette,
+        _legacy_blocks.create_block_palette, _legacy_blocks.extend_block_palette,
+        _legacy_blocks.create_theme_palette,
     ), indent=1))
     print("wrote fixtures to", FIXTURES)
