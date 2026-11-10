@@ -44,6 +44,7 @@ SHORT_CANDIDATE_LIGHTNESS = (30.0, 80.0)
 SHORT_CANDIDATE_CHROMA = (25.0, 70.0)
 SHORT_CANDIDATE_GRID = 24
 MAX_SWEEP = 150.0
+LONG_ENDPOINT_WEIGHT = 2.0
 
 
 def jp_from_j(lightness):
@@ -68,6 +69,7 @@ class BlockSpec:
     step: float
     demand: float = 0.0  # wanted hue sweep in degrees
     lightness_span: float = 0.0  # reachable J' extent
+    non_lightness: float = 0.0  # wanted a'b' length L_ab
 
 
 @dataclass
@@ -146,13 +148,20 @@ def _mean_colorfulness(context, jp_low, jp_high):
     return max(float(values.mean()), 5.0)
 
 
+def non_lightness_length(size, length, lightness_span):
+    """Wanted a'b' length L_ab = max(rho(n) L, sqrt(L^2 - L_J^2))."""
+    if size <= 1:
+        return 0.0
+    rho = min(0.6, 0.15 * np.sqrt(size - 1))
+    return float(max(rho * length, np.sqrt(max(0.0, length**2 - lightness_span**2))))
+
+
 def block_demand(size, length, lightness_span, mean_colorfulness, cap=None):
     """Wanted hue sweep in degrees for a block (Phase 4 demand)."""
     if size <= 1:
         return 0.0
-    rho = min(0.6, 0.15 * np.sqrt(size - 1))
-    non_lightness = max(rho * length, np.sqrt(max(0.0, length**2 - lightness_span**2)))
-    sweep = float(np.degrees(non_lightness / mean_colorfulness))
+    non_lightness = non_lightness_length(size, length, lightness_span)
+    sweep = float(np.degrees(non_lightness / max(mean_colorfulness, 5.0)))
     sweep = min(sweep, MAX_SWEEP)
     if cap is not None:
         sweep = min(sweep, float(cap))
@@ -179,7 +188,8 @@ def plan_blocks(block_sizes, context, step=DEFAULT_STEP):
         kind = "point" if size == 1 else ("long" if size >= LONG_BLOCK_MIN else "short")
         length = (size - 1) * step
         demand = 0.0 if cap == 0 else block_demand(size, length, span, colorfulness, cap)
-        specs.append(BlockSpec(index, size, kind, length, step, demand, span))
+        specs.append(BlockSpec(index, size, kind, length, step, demand, span,
+                               non_lightness_length(size, length, span)))
     return specs
 
 
@@ -396,6 +406,9 @@ def _place_short(spec, context, placed, sweep, twist, exclude=()):
         crowded = True
         widen += CROWDING_WIDEN
     order = np.argsort(-scores)
+    # Refinement may only move to alternatives inside the band (never optimise the penalty away).
+    in_band = (lightness >= band[0]) & (lightness <= band[1])
+    order = order[in_band[order] & np.isfinite(scores[order])]
     return Footprint(footprints[best], centres[best].copy(), float(centre_jch[best, 2]),
                      float(sweep), twist, spec.kind, float(centre_jch[best, 0])), float(raw[best]), {
         "crowded": crowded, "band": band, "candidate": best,
@@ -434,6 +447,182 @@ def footprint_separation(footprints, context=None, w_j=LIGHTNESS_DISCOUNT):
     return best
 
 
+# ---------------------------------------------------------------- allocation
+
+REFINE_ROUNDS = 3
+SHRINK_FACTOR = 0.8
+SHRINK_ROUNDS = 5
+YELLOW_HUE = 100.0
+
+
+def rebuild_footprint(spec, footprint, context, sweep, twist=None, position=None):
+    """Recompute a footprint at the same (or a new) position with a new sweep."""
+    twist = footprint.twist if twist is None else twist
+    if spec.kind == "long":
+        hue = footprint.hue if position is None else float(position)
+        points = helix_footprints(spec, context, sweep, twist, hues=[hue])[0][0]
+        centre = points[HELIX_POINTS // 2]
+        base = np.array([centre[0], centre[1] * LONG_BASE_SCALE, centre[2] * LONG_BASE_SCALE])
+        return Footprint(points, base, hue, float(sweep), twist, spec.kind, float(j_from_jp(centre[0])))
+    centre = footprint.base if position is None else np.asarray(position, dtype=float)
+    centre_jch = _cam02ucs_to_jch(centre)[None]
+    points = short_footprints(spec, centre[None], centre_jch, context, sweep, twist)[0]
+    return Footprint(points, centre.copy(), float(centre_jch[0, 2]), float(sweep), twist, spec.kind,
+                     float(centre_jch[0, 0]))
+
+
+def block_demand_at(spec, footprint, context):
+    """Demand converted to degrees with the block's own footprint colourfulness."""
+    if spec.demand <= 0:
+        return 0.0
+    colorfulness = float(np.hypot(footprint.points[:, 1], footprint.points[:, 2]).mean())
+    cap = None if context.hue_sweep in (None, "auto") else float(context.hue_sweep)
+    return block_demand(spec.size, spec.length, spec.lightness_span, colorfulness, cap)
+
+
+def _chromatic(spec, footprint):
+    return spec.demand > 0 and _cam02ucs_to_jch(footprint.base)[1] >= GREY_CHROMA
+
+
+def _lightness_extent(footprint):
+    return float(footprint.points[:, 0].min()), float(footprint.points[:, 0].max())
+
+
+def allocate_sweeps(specs, footprints, context, reserved, twist):
+    """Hue sweeps from realised hue gaps between lightness-overlapping neighbours."""
+    count = len(specs)
+    demand = np.array([block_demand_at(spec, footprint, context)
+                       for spec, footprint in zip(specs, footprints)], dtype=float)
+    sweeps = np.minimum(np.asarray(reserved, dtype=float), demand)
+    chromatic = [i for i in range(count) if _chromatic(specs[i], footprints[i])]
+    share = usable_share(len(chromatic), context.lightness_bounds)
+    hues = np.array([footprint.hue for footprint in footprints])
+    extents = [_lightness_extent(footprint) for footprint in footprints]
+    for i in chromatic:
+        neighbours = [
+            j for j in chromatic if j != i
+            and min(extents[i][1], extents[j][1]) > max(extents[i][0], extents[j][0])
+        ]
+        if not neighbours:
+            sweeps[i] = demand[i]
+            continue
+        halves = []
+        for direction in (twist, -twist):  # the light end's gap, then the dark end's gap
+            gaps = [(direction * hue_offset(hues[j], hues[i])) % 360 for j in neighbours]
+            nearest = int(np.argmin(gaps))
+            gap, j = gaps[nearest], neighbours[nearest]
+            fraction = demand[i] / max(demand[i] + demand[j], 1e-9)
+            halves.append(share * gap * fraction)
+        allowance = 2 * min(halves)
+        sweeps[i] = min(demand[i], max(sweeps[i], allowance))
+    for i in range(count):
+        if i not in chromatic:
+            sweeps[i] = 0.0
+    footprints = [rebuild_footprint(spec, footprint, context, sweep, twist)
+                  for spec, footprint, sweep in zip(specs, footprints, sweeps)]
+    for round_ in range(SHRINK_ROUNDS):
+        close = _close_pairs(footprints, SEP_MIN)
+        if not close:
+            break
+        shrink = {index for pair in close for index in pair if sweeps[index] > 0}
+        if not shrink:
+            break
+        for index in shrink:
+            sweeps[index] *= SHRINK_FACTOR
+            footprints[index] = rebuild_footprint(specs[index], footprints[index], context,
+                                                  sweeps[index], twist)
+    return footprints, sweeps
+
+
+def _close_pairs(footprints, threshold):
+    pairs = []
+    for i in range(len(footprints)):
+        for j in range(i + 1, len(footprints)):
+            if discounted_distance(footprints[i].points, footprints[j].points).min() < threshold:
+                pairs.append((i, j))
+    return pairs
+
+
+def separation_objective(specs, footprints, context, fixed_colors=None):
+    """(minimum discounted footprint separation, size-weighted satisfied demand)."""
+    placed = _Placed(context, fixed_colors)
+    for index, footprint in enumerate(footprints):
+        placed.add(footprint.points, index)
+    separation = np.inf
+    for index, footprint in enumerate(footprints):
+        others = _Placed(context, None)
+        keep = placed.owner != index
+        others.points, others.owner = placed.points[keep], placed.owner[keep]
+        if context.colorblind_safe:
+            others.cvd_points = placed.cvd_points[keep]
+        separation = min(separation, float(others.score(footprint.points[None])[0]))
+    satisfied = sum(
+        spec.size * (1.0 if spec.demand <= 0 else min(1.0, footprint.sweep / spec.demand))
+        for spec, footprint in zip(specs, footprints)
+    )
+    return separation, satisfied
+
+
+def _better(candidate, incumbent, tolerance=1e-6):
+    if candidate[0] > incumbent[0] + tolerance:
+        return True
+    return abs(candidate[0] - incumbent[0]) <= tolerance and candidate[1] > incumbent[1] + tolerance
+
+
+def choose_twist(specs, footprints):
+    """Global twist sending the most sweep-weighted light ends toward yellow."""
+    total = 0.0
+    for spec, footprint in zip(specs, footprints):
+        if spec.demand > 0:
+            total += footprint.sweep * np.sin(np.deg2rad(hue_offset(YELLOW_HUE, footprint.hue)))
+    return -1 if total < -1e-9 else 1
+
+
+def refine(specs, footprints, info, context, reserved, twist, fixed_colors=None,
+           rounds=REFINE_ROUNDS):
+    """Local moves on footprints: swaps between same-class blocks and moves to alternatives."""
+    footprints, sweeps = allocate_sweeps(specs, footprints, context, reserved, twist)
+    best = separation_objective(specs, footprints, context, fixed_colors)
+    positions = [footprint.hue if spec.kind == "long" else footprint.base.copy()
+                 for spec, footprint in zip(specs, footprints)]
+    centres, _ = short_candidates(context)
+    accepted = 0
+
+    def evaluate(new_positions):
+        moved = [rebuild_footprint(spec, footprint, context, reserved[i], twist, new_positions[i])
+                 for i, (spec, footprint) in enumerate(zip(specs, footprints))]
+        allocated, new_sweeps = allocate_sweeps(specs, moved, context, reserved, twist)
+        return separation_objective(specs, allocated, context, fixed_colors), allocated, new_sweeps
+
+    for round_ in range(rounds):
+        improved = False
+        moves = []
+        for i in range(len(specs)):
+            for j in range(i + 1, len(specs)):
+                if specs[i].kind == specs[j].kind and specs[i].size != specs[j].size:
+                    moves.append(("swap", i, j))
+        for i, details in enumerate(info):
+            for alternative in details.get("alternatives", [])[1:]:
+                moves.append(("move", i, alternative))
+        for move in moves:
+            candidate = list(positions)
+            if move[0] == "swap":
+                _, i, j = move
+                candidate[i], candidate[j] = positions[j], positions[i]
+            else:
+                _, i, alternative = move
+                candidate[i] = (float(alternative) if specs[i].kind == "long"
+                                else centres[int(alternative)].copy())
+            score, allocated, new_sweeps = evaluate(candidate)
+            if _better(score, best):
+                best, footprints, sweeps, positions = score, allocated, new_sweeps, candidate
+                improved = True
+                accepted += 1
+        if not improved:
+            break
+    return footprints, sweeps, {"objective": best, "accepted_moves": accepted}
+
+
 # ---------------------------------------------------------------- fitting
 
 
@@ -449,7 +638,9 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
         themes[i] = fit_theme_arc(
             footprint.base, spec.size, step=spec.step, domain=context.domain, gamut=context.gamut,
             hue_allowance=(sweep / 2, sweep / 2), twist=footprint.twist,
-            other_colors=np.vstack(others) if others else None, grid=context.grid, **kwargs,
+            other_colors=np.vstack(others) if others else None, grid=context.grid,
+            endpoint_targets=(footprint.points[0], footprint.points[-1]),
+            soft_endpoints=LONG_ENDPOINT_WEIGHT if spec.kind == "long" else True, **kwargs,
         )
         others.append(themes[i].colors)
     return themes
@@ -464,9 +655,12 @@ def block_separation(blocks, w_j=LIGHTNESS_DISCOUNT):
     return best
 
 
-def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist=1,
-                        fixed_colors=None, **context_options):
-    """Run the block-palette pipeline; return (CAM02-UCS colours, diagnostics)."""
+def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist="auto",
+                        fixed_colors=None, refine_rounds=None, **context_options):
+    """Run the block-palette pipeline; return (CAM02-UCS colours, diagnostics).
+
+    Stages: plan -> select bases -> allocate hue sweep -> refine -> fit.
+    """
     timings = {}
     start = time.perf_counter()
     if context is None:
@@ -474,17 +668,36 @@ def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist=1
     timings["setup"] = time.perf_counter() - start
     start = time.perf_counter()
     specs = plan_blocks(block_sizes, context, step)
-    sweeps = reserved_sweeps(specs, context)
-    footprints, info = select_bases(specs, context, sweeps, twist, fixed_colors)
+    reserved = reserved_sweeps(specs, context)
+    timings["plan"] = time.perf_counter() - start
+    start = time.perf_counter()
+    sign = 1 if twist == "auto" else int(twist)
+    footprints, info = select_bases(specs, context, reserved, sign, fixed_colors)
+    if twist == "auto":
+        chosen = choose_twist(specs, footprints)
+        if chosen != sign:
+            sign = chosen
+            footprints, info = select_bases(specs, context, reserved, sign, fixed_colors)
     timings["select"] = time.perf_counter() - start
+    start = time.perf_counter()
+    rounds = REFINE_ROUNDS if refine_rounds is None else refine_rounds
+    if rounds > 0:
+        footprints, sweeps, refinement = refine(specs, footprints, info, context, reserved, sign,
+                                                fixed_colors, rounds)
+    else:
+        footprints, sweeps = allocate_sweeps(specs, footprints, context, reserved, sign)
+        refinement = {"objective": separation_objective(specs, footprints, context, fixed_colors),
+                      "accepted_moves": 0}
+    timings["allocate_refine"] = time.perf_counter() - start
     start = time.perf_counter()
     themes = fit_blocks(specs, footprints, context, fixed_colors)
     timings["fit"] = time.perf_counter() - start
     blocks = [theme.colors for theme in themes]
     diagnostics = {
         "specs": specs, "footprints": footprints, "selection": info, "themes": themes,
-        "sweeps": [footprint.sweep for footprint in footprints], "twist": twist,
-        "timings": timings,
+        "reserved": [float(value) for value in reserved],
+        "sweeps": [float(value) for value in sweeps], "twist": sign,
+        "refinement": refinement, "timings": timings,
         "separation": block_separation(blocks) if len(blocks) > 1 else np.inf,
         "footprint_separation": footprint_separation(footprints) if len(blocks) > 1 else np.inf,
         "crowding": any(item.get("crowded", False) for item in info),

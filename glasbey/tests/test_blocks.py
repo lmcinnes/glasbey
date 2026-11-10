@@ -72,3 +72,97 @@ def test_demand_scales_with_block_size():
     assert all(a <= b for a, b in zip(demands, demands[1:]))
     zero = make_context(hue_sweep=0)
     assert all(spec.demand == 0 for spec in plan_blocks([3, 10], zero))
+
+
+# ------------------------------------------------------------------ Phase 4
+
+from glasbey._blocks import (  # noqa: E402
+    Footprint, allocate_sweeps, choose_twist, rebuild_footprint, refine,
+    separation_objective,
+)
+from glasbey._theme import hue_offset  # noqa: E402
+
+
+def _chromatic_offsets(diagnostics):
+    for spec, theme in zip(diagnostics["specs"], diagnostics["themes"]):
+        base = _cam02ucs_to_jch(theme.base)
+        if spec.size < 2 or base[1] < 12 or diagnostics["sweeps"][spec.index] <= 0:
+            continue
+        offsets = hue_offset(_cam02ucs_to_jch(theme.colors)[:, 2], base[2])
+        yield spec, offsets
+
+
+@pytest.fixture(scope="module", params=range(len(CONFIGS)), ids=["10-10-3x6", "12-8-3x4-2x2"])
+def twisted(request):
+    sizes = CONFIGS[request.param]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        colors, diagnostics = build_block_palette(sizes, context=make_context(), twist=1)
+    return sizes, colors, diagnostics
+
+
+def test_twist_one_light_ends_have_higher_hue(twisted):
+    sizes, colors, diagnostics = twisted
+    assert diagnostics["twist"] == 1
+    checked = 0
+    for spec, offsets in _chromatic_offsets(diagnostics):
+        assert offsets[-1] > offsets[0]
+        checked += 1
+    assert checked >= len(sizes) - 1
+
+
+def test_long_blocks_ab_step_and_separation(twisted):
+    sizes, colors, diagnostics = twisted
+    steps, counts = [], []
+    for spec, theme in zip(diagnostics["specs"], diagnostics["themes"]):
+        if spec.kind == "long":
+            steps.append(np.linalg.norm(np.diff(theme.colors[:, 1:], axis=0), axis=1).sum())
+            counts.append(spec.size - 1)
+    assert sum(steps) / sum(counts) >= 4.0
+    assert diagnostics["separation"] >= 9.5
+
+
+def test_zero_hue_sweep_keeps_hue_constant():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        colors, diagnostics = build_block_palette([10, 6, 3, 3, 2], context=make_context(hue_sweep=0))
+    assert all(sweep == 0 for sweep in diagnostics["sweeps"])
+    for theme in diagnostics["themes"]:
+        assert theme.diagnostics["hue_spread"] < 10
+
+
+def test_equal_gaps_larger_blocks_get_more_sweep():
+    context = make_context()
+    specs = plan_blocks([3, 4, 5], context)
+    hues = np.array([20.0, 140.0, 260.0])
+    footprints = []
+    for spec, hue in zip(specs, hues):
+        centre = np.array([60.0, 22 * np.cos(np.deg2rad(hue)), 22 * np.sin(np.deg2rad(hue))])
+        seed = Footprint(centre[None], centre, hue, 0.0, 1, spec.kind)
+        footprints.append(rebuild_footprint(spec, seed, context, 0.0, 1, centre))
+    reserved = reserved_sweeps(specs, context)
+    allocated, sweeps = allocate_sweeps(specs, footprints, context, reserved, 1)
+    assert sweeps[0] <= sweeps[1] <= sweeps[2]
+    assert sweeps[2] > 0
+
+
+def test_refinement_never_worsens_footprint_objective():
+    context = make_context()
+    specs = plan_blocks([12, 8, 3, 3, 3, 3, 2, 2], context)
+    reserved = reserved_sweeps(specs, context)
+    footprints, info = select_bases(specs, context, reserved, 1)
+    allocated, _ = allocate_sweeps(specs, footprints, context, reserved, 1)
+    before = separation_objective(specs, allocated, context)
+    refined, sweeps, report = refine(specs, footprints, info, context, reserved, 1)
+    after = report["objective"]
+    assert after[0] >= before[0] - 1e-9
+    assert np.all(np.asarray(sweeps) >= 0)
+
+
+def test_auto_twist_prefers_yellow_light_ends():
+    context = make_context()
+    spec = plan_blocks([10], context)[0]
+    below_yellow = Footprint(np.zeros((1, 3)), np.zeros(3), 40.0, 60.0, 1, "long")
+    above_yellow = Footprint(np.zeros((1, 3)), np.zeros(3), 160.0, 60.0, 1, "long")
+    assert choose_twist([spec], [below_yellow]) == 1
+    assert choose_twist([spec], [above_yellow]) == -1

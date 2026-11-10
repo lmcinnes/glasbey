@@ -31,6 +31,9 @@ CONTROL_POINTS = 6
 MAX_ITER = 40
 LENGTH_RETRIES = (1.0, 0.88, 0.75, 0.6)
 REACH_STRETCH = 1.15
+SIDE_SLACK = 0.85
+SOFT_ENDPOINT_WEIGHT = 2.0
+MIN_TURN_FRACTION = 0.3
 ENDPOINT_HUE_WEIGHT = 0.4
 HUE_PROFILE_WEIGHT = 1.0
 HUE_PROFILE_SCALE = 20.0
@@ -254,8 +257,16 @@ def _target_offsets(hue_allowance, twist):
     return hue_allowance[1], -hue_allowance[0]
 
 
-def _pick_endpoint(base, candidates, side_length, target_offset, base_hue, chromatic):
+def _pick_endpoint(base, candidates, side_length, target_offset, base_hue, chromatic,
+                   target_point=None):
     distances = np.linalg.norm(candidates - base, axis=1)
+    if target_point is not None:
+        # Follow the predicted direction (e.g. a footprint end) at the side's length.
+        direction = np.asarray(target_point, dtype=float) - base
+        norm = np.linalg.norm(direction)
+        if norm > 1e-9:
+            goal = base + direction * side_length / norm
+            return candidates[int(np.argmin(np.linalg.norm(candidates - goal, axis=1)))]
     score = np.abs(distances - side_length)
     if chromatic:
         offsets = hue_offset(_cam02ucs_to_jch(candidates)[:, 2], base_hue)
@@ -282,7 +293,8 @@ def _hue_profile(base_jch, dark_jp, light_jp, offsets, chromatic):
     return bind
 
 
-def _make_terms(base_jch, profile, chromatic, use_profile, length_target, slope):
+def _make_terms(base_jch, profile, chromatic, use_profile, length_target, slope, twist=0,
+                side_goals=(0.0, 0.0), min_turn=0.0):
     base_chroma = max(base_jch[1], 1e-6)
 
     def objective(problem, variables, geometry):
@@ -298,10 +310,23 @@ def _make_terms(base_jch, profile, chromatic, use_profile, length_target, slope)
         coefficients = problem.coefficients(variables)
         velocity = problem.first @ coefficients
         speed = np.linalg.norm(velocity, axis=1)
-        return np.concatenate([
+        parts = [
             [geometry[1] / length_target - 1],
             (velocity[:, 0] - slope * speed) / max(length_target, 1.0),
-        ])
+        ]
+        # Each side of the base must carry its share, so the window stays centred.
+        position = geometry[2][np.searchsorted(problem.mesh, problem.anchor_parameters[0])]
+        for goal, side_length in zip(side_goals, (position, 1 - position)):
+            if goal > 0:
+                parts.append([side_length * geometry[1] / goal - 1])
+        if twist:
+            # Hue turns only in the twist direction: M'^2 dh/dt = a' b'_t - b' a'_t.
+            colors = geometry[0]
+            turning = colors[:, 1] * velocity[:, 2] - colors[:, 2] * velocity[:, 1]
+            # dh/dt >= min_turn (radians per unit parameter), scaled by M'^2 so it fades at grey.
+            squared = colors[:, 1]**2 + colors[:, 2]**2
+            parts.append((twist * turning - min_turn * squared) / max(length_target, 1.0)**2)
+        return np.concatenate(parts)
 
     return objective, constraints
 
@@ -362,7 +387,7 @@ def _diagnostics(colors, base_jch, target_length, arc_length, inset, fallback, s
 
 def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_allowance=(0.0, 0.0),
                   twist=1, chroma_floor=0.5, other_colors=None, grid=None, max_iter=MAX_ITER,
-                  warn=True):
+                  warn=True, endpoint_targets=None, soft_endpoints=False):
     """Fit one block as a smooth arc through ``base`` and sample ``n`` colours.
 
     Parameters
@@ -388,6 +413,13 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
         Already-placed colours; the sample window is slid to avoid them.
     grid : _Grid, optional
         A prebuilt grid over ``domain`` used for routing and endpoint search.
+    endpoint_targets : (array, array), optional
+        Predicted dark and light ends (e.g. from a block footprint); provisional
+        endpoints follow their directions from the base.
+    soft_endpoints : bool or float
+        Also hold the arc's ends near those provisional endpoints with soft
+        anchors (``True`` uses ``SOFT_ENDPOINT_WEIGHT``; a float is the weight),
+        so the block stays close to its predicted footprint.
     """
     base = np.asarray(base, dtype=float).reshape(3)
     domain = domain or _Domain(fast=True)
@@ -421,12 +453,14 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
         dark_length, light_length = _side_targets(target_length, 0.9 * reach_dark, 0.9 * reach_light)
         offsets = _target_offsets(hue_allowance, twist)
         routes = []
-        for side_length, side, offset in ((dark_length, dark_side, offsets[0]),
-                                          (light_length, light_side, offsets[1])):
+        targets = endpoint_targets if endpoint_targets is not None else (None, None)
+        for side_length, side, offset, target in ((dark_length, dark_side, offsets[0], targets[0]),
+                                                  (light_length, light_side, offsets[1], targets[1])):
             if side_length <= 0 or not len(side):
                 routes.append(None)
                 continue
-            endpoint = _pick_endpoint(inset_base, side, side_length, offset, local_jch[2], chromatic)
+            endpoint = _pick_endpoint(inset_base, side, side_length, offset, local_jch[2], chromatic,
+                                      target)
             routes.append(_route(view, inset_base, endpoint))
         if routes[0] is None and routes[1] is None:
             continue
@@ -448,15 +482,31 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
         profile = _hue_profile(local_jch, points[0, 0] if anchor_index > 0 else None,
                                points[-1, 0] if anchor_index < len(points) - 1 else None,
                                offsets, chromatic)(inset_base[0])
-        use_profile = n > 2
+        use_profile = True
+        turn = int(np.sign(twist)) if chromatic and max(hue_allowance) > 0 else 0
         for factor in LENGTH_RETRIES:
             length_goal = max(reachable * factor, 1e-3)
+            anchors, anchor_parameters, weights = [inset_base], [parameters[anchor_index]], [None]
+            endpoint_weight = (SOFT_ENDPOINT_WEIGHT if soft_endpoints is True else float(soft_endpoints or 0))
+            if endpoint_targets is not None and endpoint_weight > 0:
+                # Keep the arc near the footprint the block was selected for.
+                if anchor_index > 0:
+                    anchors.append(points[0]); anchor_parameters.append(0.0)
+                    weights.append(endpoint_weight)
+                if anchor_index < len(points) - 1:
+                    anchors.append(points[-1]); anchor_parameters.append(1.0)
+                    weights.append(endpoint_weight)
             problem = _SplineProblem(
-                inset_base[None], points, parameters, parameters[anchor_index:anchor_index + 1],
-                CONTROL_POINTS, local, direction=1, scale=max(length_goal, 1.0), profile="fast",
+                np.vstack(anchors), points, parameters, np.array(anchor_parameters),
+                CONTROL_POINTS, local, anchor_weights=weights, direction=1,
+                scale=max(length_goal, 1.0), profile="fast",
             )
+            share = SIDE_SLACK * length_goal / max(sum(side_reach), 1e-9)
             objective, constraints = _make_terms(
-                local_jch, profile, chromatic, use_profile, length_goal, MIN_LIGHTNESS_SLOPE,
+                local_jch, profile, chromatic, use_profile, length_goal, MIN_LIGHTNESS_SLOPE, turn,
+                (share * side_reach[0] if anchor_index > 0 else 0.0,
+                 share * side_reach[1] if anchor_index < len(points) - 1 else 0.0),
+                MIN_TURN_FRACTION * np.deg2rad(sum(hue_allowance)) if turn else 0.0,
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
