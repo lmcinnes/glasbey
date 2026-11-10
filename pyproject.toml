@@ -32,7 +32,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-cicd = ["pytest", "pytest-azurepipelines", "pytest-cov"]
+cicd = [
+    "hypothesis>=6",
+    "pytest",
+    "pytest-azurepipelines",
+    "pytest-cov",
+]
 
 [tool.setuptools]
 zip-safe = false
