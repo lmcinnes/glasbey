@@ -16,7 +16,7 @@ import numpy as np
 from colorspacious import CIECAM02Space
 from scipy.integrate import trapezoid
 
-from ._curves import _Arc, _Domain, _Grid, _SplineProblem, _cam02ucs_to_jch
+from ._curves import _Domain, _Grid, _SplineProblem, _cam02ucs_to_jch
 from ._grids import rgb_grid
 
 # Tunable defaults (prototype values; see the implementation plan).
