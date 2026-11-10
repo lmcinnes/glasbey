@@ -16,11 +16,12 @@ from scipy.spatial import cKDTree
 
 from ._curves import _Domain, _Grid, _cam02ucs_to_jch
 from ._fastcolor import cam02ucs_to_srgb1
-from ._grids import rgb_grid
+from ._grids import rgb_grid, jch_grid
 from ._theme import (
-    DEFAULT_STEP, GREY_CHROMA, LIGHTNESS_DISCOUNT, chroma_to_colorfulness, discounted_distance,
-    fit_theme_arc, gamut_table, hue_offset,
+    DEFAULT_STEP, GREY_CHROMA, LIGHTNESS_DISCOUNT, _sample_window, chroma_to_colorfulness,
+    discounted_distance, fit_theme_arc, gamut_table, hue_offset,
 )
+from ._converters import get_rgb_palette
 
 __all__ = [
     "BlockSpec", "Footprint", "discounted_distance", "plan_blocks", "select_bases",
@@ -100,6 +101,7 @@ class _Context:
     cvd_space: dict = None
     hue_sweep: object = "auto"
     diagnostics: dict = field(default_factory=dict)
+    grid_space: str = "RGB"
 
     def cvd(self, points):
         points = np.asarray(points, dtype=float)
@@ -128,7 +130,7 @@ def make_context(lightness_bounds=(10, 90), chroma_bounds=(0, 80), hue_bounds=(0
         tuple(float(v) for v in jp_from_j(lightness_bounds)), lightness_bounds, chroma_bounds,
         hue_bounds, grid, colorblind_safe,
         {"name": "sRGB1+CVD", "cvd_type": cvd_type, "severity": cvd_severity},
-        hue_sweep,
+        hue_sweep, grid_space=grid_space,
     )
     return context
 
@@ -247,8 +249,15 @@ def short_candidates(context):
     cache = context.diagnostics.setdefault("_short_candidates", {})
     if "colors" in cache:
         return cache["colors"], cache["jch"]
-    jch = rgb_grid(SHORT_CANDIDATE_GRID, *context.domain.rgb_bounds, output_colorspace="JCh").astype(float)
-    cam = cspace_convert(jch, "JCh", "CAM02-UCS")
+    if context.grid_space == "JCh":
+        cam = jch_grid(SHORT_CANDIDATE_GRID, context.lightness_bounds, context.chroma_bounds,
+                       context.hue_bounds, output_colorspace="CAM02-UCS").astype(float)
+        cam = cam[context.domain.contains(cam)]
+        jch = _cam02ucs_to_jch(cam)
+    else:
+        jch = rgb_grid(SHORT_CANDIDATE_GRID, *context.domain.rgb_bounds,
+                       output_colorspace="JCh").astype(float)
+        cam = cspace_convert(jch, "JCh", "CAM02-UCS")
 
     def mask(lightness, chroma):
         keep = (jch[:, 0] >= lightness[0]) & (jch[:, 0] <= lightness[1])
@@ -642,6 +651,8 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
             endpoint_targets=(footprint.points[0], footprint.points[-1]),
             soft_endpoints=LONG_ENDPOINT_WEIGHT if spec.kind == "long" else True, **kwargs,
         )
+        themes[i].diagnostics["allowance"] = (sweep / 2, sweep / 2)
+        themes[i].diagnostics["twist"] = footprint.twist
         others.append(themes[i].colors)
     return themes
 
@@ -655,16 +666,190 @@ def block_separation(blocks, w_j=LIGHTNESS_DISCOUNT):
     return best
 
 
+# ---------------------------------------------------------------- polish
+
+POLISH_SLIDES = 9
+POLISH_SHRINKS = (1.0, 0.95, 0.9, 0.85)
+POLISH_MAX_REFITS = 4
+ROUNDING_NUDGE = 0.005
+
+
+@dataclass
+class _BlockState:
+    theme: object
+    length: float
+    offset: float = 0.0
+
+    def positions(self, n=None):
+        n = self.theme.size if n is None else n
+        if self.theme.arc is None or n == 1:
+            return None
+        length = min(self.length, 0.98 * self.theme.arc.length)
+        return _sample_window(self.theme.arc, n, length, self.theme.base_position, self.offset)[0]
+
+    def colors(self):
+        positions = self.positions()
+        if positions is None:
+            return self.theme.colors
+        return self.theme.arc(positions)
+
+
+def palette_separation(blocks, context, fixed_colors=None):
+    """Global minimum lightness-discounted between-block distance (min with CVD if enabled)."""
+    def minimum(blocks, fixed):
+        best = np.inf
+        for i in range(len(blocks)):
+            for j in range(i + 1, len(blocks)):
+                best = min(best, float(discounted_distance(blocks[i], blocks[j]).min()))
+            if fixed is not None and len(fixed):
+                best = min(best, float(discounted_distance(blocks[i], fixed).min()))
+        return best
+
+    result = minimum(blocks, fixed_colors)
+    if context.colorblind_safe:
+        simulated = [context.cvd(block) for block in blocks]
+        fixed = context.cvd(fixed_colors) if fixed_colors is not None and len(fixed_colors) else None
+        result = min(result, minimum(simulated, fixed))
+    return result
+
+
+def _closest_pair(blocks, fixed_colors=None):
+    best, pair = np.inf, None
+    for i in range(len(blocks)):
+        for j in range(i + 1, len(blocks)):
+            distance = float(discounted_distance(blocks[i], blocks[j]).min())
+            if distance < best:
+                best, pair = distance, (i, j)
+        if fixed_colors is not None and len(fixed_colors):
+            distance = float(discounted_distance(blocks[i], fixed_colors).min())
+            if distance < best:
+                best, pair = distance, (i, None)
+    return pair
+
+
+def polish_blocks(specs, themes, context, n_iter=10, search_radius=5.0, fixed_colors=None):
+    """Block-level moves that raise the global minimum without breaking block order.
+
+    Each round takes the closest block pair and tries, for each block of the
+    pair, sliding its window along its arc by up to ``search_radius``,
+    shrinking its step by up to 15% and (short blocks only) refitting from a
+    base nudged by up to ``search_radius``. The single best improving move is
+    accepted.
+    """
+    states = [_BlockState(theme, theme.step * (theme.size - 1),
+                          theme.diagnostics.get("window_offset", 0.0)) for theme in themes]
+    blocks = [state.colors() for state in states]
+    current = palette_separation(blocks, context, fixed_colors)
+    accepted, refits = 0, 0
+    for iteration in range(int(n_iter)):
+        pair = _closest_pair(blocks, fixed_colors)
+        if pair is None:
+            break
+        best_score, best_move = current, None
+        for index in (i for i in pair if i is not None):
+            state = states[index]
+            if state.theme.arc is None or state.theme.size < 2:
+                continue
+            base_length = state.theme.step * (state.theme.size - 1)
+            for scale in POLISH_SHRINKS:
+                for slide in np.linspace(-search_radius, search_radius, POLISH_SLIDES):
+                    trial = _BlockState(state.theme, base_length * scale, state.offset + slide)
+                    if scale == state.length / max(base_length, 1e-9) and slide == 0:
+                        continue
+                    candidate = list(blocks)
+                    candidate[index] = trial.colors()
+                    score = palette_separation(candidate, context, fixed_colors)
+                    if score > best_score + 1e-6:
+                        best_score, best_move = score, (index, trial)
+        if best_move is None and refits < POLISH_MAX_REFITS:
+            for index in (i for i in pair if i is not None):
+                if specs[index].kind == "long" or states[index].theme.arc is None:
+                    continue
+                theme = states[index].theme
+                others = [blocks[k] for k in range(len(blocks)) if k != index]
+                if fixed_colors is not None and len(fixed_colors):
+                    others.append(fixed_colors)
+                others = np.vstack(others)
+                nearest = others[np.argmin(discounted_distance(blocks[index], others).min(axis=0))]
+                away = theme.base - nearest
+                away[0] = 0.0
+                norm = np.linalg.norm(away)
+                if norm < 1e-9:
+                    continue
+                nudged = theme.base + away / norm * search_radius
+                refits += 1
+                refit = fit_theme_arc(
+                    nudged, theme.size, step=specs[index].step, domain=context.domain,
+                    gamut=context.gamut, grid=context.grid, warn=False,
+                    hue_allowance=(theme.diagnostics.get("allowance", (0.0, 0.0))),
+                    twist=theme.diagnostics.get("twist", 1), other_colors=others,
+                )
+                if refit.diagnostics["fallback"]:
+                    continue
+                trial = _BlockState(refit, refit.step * (refit.size - 1),
+                                    refit.diagnostics.get("window_offset", 0.0))
+                candidate = list(blocks)
+                candidate[index] = trial.colors()
+                score = palette_separation(candidate, context, fixed_colors)
+                if score > best_score + 1e-6:
+                    best_score, best_move = score, (index, trial)
+        if best_move is None:
+            break
+        index, trial = best_move
+        states[index] = trial
+        blocks[index] = trial.colors()
+        current = best_score
+        accepted += 1
+    return states, {"separation": current, "accepted_moves": accepted, "refits": refits}
+
+
+def _hex_lightness(colors):
+    from matplotlib.colors import to_rgb
+
+    rgb = np.array([to_rgb(color) for color in colors])
+    return cspace_convert(rgb, "sRGB1", "CAM02-UCS")[:, 0]
+
+
+def blocks_to_output(states, as_hex=True):
+    """Convert block states to RGB output, repairing collisions caused by hex rounding."""
+    output = []
+    for state in states:
+        colors = state.colors()
+        if not as_hex:
+            output.extend(get_rgb_palette(colors, as_hex=False))
+            continue
+        block = list(get_rgb_palette(colors, as_hex=True))
+        positions = state.positions()
+        if positions is not None and len(block) > 1:
+            for attempt in range(8):
+                lightness = _hex_lightness(block)
+                bad = [k for k in range(1, len(block))
+                       if block[k] == block[k - 1] or lightness[k] <= lightness[k - 1]]
+                if not bad:
+                    break
+                for k in bad:
+                    # Push the pair apart along the arc by +-0.5%.
+                    positions[k] = min(1.0, positions[k] + ROUNDING_NUDGE)
+                    positions[k - 1] = max(0.0, positions[k - 1] - ROUNDING_NUDGE)
+                block = list(get_rgb_palette(state.theme.arc(positions), as_hex=True))
+        output.extend(block)
+    return output
+
+
 def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist="auto",
-                        fixed_colors=None, refine_rounds=None, **context_options):
+                        fixed_colors=None, refine_rounds=None, optimize=False, n_iter=10,
+                        search_radius=5.0, **context_options):
     """Run the block-palette pipeline; return (CAM02-UCS colours, diagnostics).
 
-    Stages: plan -> select bases -> allocate hue sweep -> refine -> fit.
+    Stages: plan -> select bases -> allocate hue sweep -> refine -> fit -> polish.
+    ``diagnostics["states"]`` holds per-block sampling states for output.
     """
     timings = {}
     start = time.perf_counter()
     if context is None:
         context = make_context(**context_options)
+    if fixed_colors is not None:
+        fixed_colors = np.asarray(fixed_colors, dtype=float).reshape(-1, 3)
     timings["setup"] = time.perf_counter() - start
     start = time.perf_counter()
     specs = plan_blocks(block_sizes, context, step)
@@ -681,7 +866,7 @@ def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist="
     timings["select"] = time.perf_counter() - start
     start = time.perf_counter()
     rounds = REFINE_ROUNDS if refine_rounds is None else refine_rounds
-    if rounds > 0:
+    if rounds > 0 and len(specs) > 1:
         footprints, sweeps, refinement = refine(specs, footprints, info, context, reserved, sign,
                                                 fixed_colors, rounds)
     else:
@@ -692,14 +877,24 @@ def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist="
     start = time.perf_counter()
     themes = fit_blocks(specs, footprints, context, fixed_colors)
     timings["fit"] = time.perf_counter() - start
-    blocks = [theme.colors for theme in themes]
+    start = time.perf_counter()
+    if optimize and len(specs) + (fixed_colors is not None and len(fixed_colors) > 0) > 1:
+        states, polish = polish_blocks(specs, themes, context, n_iter, search_radius, fixed_colors)
+    else:
+        states = [_BlockState(theme, theme.step * (theme.size - 1),
+                              theme.diagnostics.get("window_offset", 0.0)) for theme in themes]
+        polish = {"accepted_moves": 0, "refits": 0}
+    timings["polish"] = time.perf_counter() - start
+    blocks = [state.colors() for state in states]
     diagnostics = {
         "specs": specs, "footprints": footprints, "selection": info, "themes": themes,
-        "reserved": [float(value) for value in reserved],
+        "states": states, "reserved": [float(value) for value in reserved],
         "sweeps": [float(value) for value in sweeps], "twist": sign,
-        "refinement": refinement, "timings": timings,
+        "refinement": refinement, "polish": polish, "timings": timings,
         "separation": block_separation(blocks) if len(blocks) > 1 else np.inf,
+        "palette_separation": palette_separation(blocks, context, fixed_colors),
         "footprint_separation": footprint_separation(footprints) if len(blocks) > 1 else np.inf,
         "crowding": any(item.get("crowded", False) for item in info),
+        "fallbacks": int(sum(theme.diagnostics.get("fallback", False) for theme in themes)),
     }
     return np.vstack(blocks), diagnostics
