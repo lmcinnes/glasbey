@@ -459,6 +459,7 @@ def footprint_separation(footprints, context=None, w_j=LIGHTNESS_DISCOUNT):
 # ---------------------------------------------------------------- allocation
 
 REFINE_ROUNDS = 3
+REFINE_PAIRS = 3
 SHRINK_FACTOR = 0.8
 SHRINK_ROUNDS = 5
 YELLOW_HUE = 100.0
@@ -543,33 +544,48 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
     return footprints, sweeps
 
 
+def _pair_minima(footprints, w_j=LIGHTNESS_DISCOUNT):
+    """(K, K) matrix of minimum discounted distances between footprints (inf on the diagonal)."""
+    points = np.vstack([footprint.points for footprint in footprints])
+    owner = np.concatenate([np.full(len(f.points), i) for i, f in enumerate(footprints)])
+    distances = discounted_distance(points, points, w_j)
+    count = len(footprints)
+    result = np.full((count, count), np.inf)
+    for i in range(count):
+        rows = distances[owner == i]
+        for j in range(i + 1, count):
+            result[i, j] = result[j, i] = rows[:, owner == j].min()
+    return result
+
+
 def _close_pairs(footprints, threshold):
-    pairs = []
-    for i in range(len(footprints)):
-        for j in range(i + 1, len(footprints)):
-            if discounted_distance(footprints[i].points, footprints[j].points).min() < threshold:
-                pairs.append((i, j))
-    return pairs
+    minima = _pair_minima(footprints)
+    return [(int(i), int(j)) for i, j in zip(*np.nonzero(np.triu(minima < threshold, 1)))]
 
 
 def separation_objective(specs, footprints, context, fixed_colors=None):
     """(minimum discounted footprint separation, size-weighted satisfied demand)."""
-    placed = _Placed(context, fixed_colors)
-    for index, footprint in enumerate(footprints):
-        placed.add(footprint.points, index)
-    separation = np.inf
-    for index, footprint in enumerate(footprints):
-        others = _Placed(context, None)
-        keep = placed.owner != index
-        others.points, others.owner = placed.points[keep], placed.owner[keep]
-        if context.colorblind_safe:
-            others.cvd_points = placed.cvd_points[keep]
-        separation = min(separation, float(others.score(footprint.points[None])[0]))
+    def minimum(points_list, fixed, extremes):
+        points = np.vstack(points_list)
+        owner = np.concatenate([np.full(len(p), i) for i, p in enumerate(points_list)])
+        distances = discounted_distance(points, points)
+        distances[owner[:, None] == owner[None, :]] = np.inf
+        best = distances.min() if len(points_list) > 1 else np.inf
+        if fixed is not None and len(fixed):
+            best = min(best, discounted_distance(points, fixed).min())
+        return min(best, np.linalg.norm(points[:, None] - extremes, axis=-1).min())
+
+    extremes = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS")
+    points = [footprint.points for footprint in footprints]
+    separation = minimum(points, fixed_colors, extremes)
+    if context.colorblind_safe:
+        fixed = context.cvd(fixed_colors) if fixed_colors is not None and len(fixed_colors) else None
+        separation = min(separation, minimum([context.cvd(p) for p in points], fixed, extremes))
     satisfied = sum(
         spec.size * (1.0 if spec.demand <= 0 else min(1.0, footprint.sweep / spec.demand))
         for spec, footprint in zip(specs, footprints)
     )
-    return separation, satisfied
+    return float(separation), satisfied
 
 
 def _better(candidate, incumbent, tolerance=1e-6):
@@ -610,7 +626,13 @@ def refine(specs, footprints, info, context, reserved, twist, fixed_colors=None,
             for j in range(i + 1, len(specs)):
                 if specs[i].kind == specs[j].kind and specs[i].size != specs[j].size:
                     moves.append(("swap", i, j))
+        # Only blocks in the closest pairs can raise the minimum separation.
+        minima = _pair_minima(footprints) if len(footprints) > 1 else np.zeros((1, 1))
+        order = np.argsort(minima, axis=None)[: 2 * REFINE_PAIRS]
+        involved = {int(k) for flat in order for k in np.unravel_index(flat, minima.shape)}
         for i, details in enumerate(info):
+            if i not in involved:
+                continue
             for alternative in details.get("alternatives", [])[1:]:
                 moves.append(("move", i, alternative))
         for move in moves:

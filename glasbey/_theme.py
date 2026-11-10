@@ -295,38 +295,44 @@ def _hue_profile(base_jch, dark_jp, light_jp, offsets, chromatic):
 
 def _make_terms(base_jch, profile, chromatic, use_profile, length_target, slope, twist=0,
                 side_goals=(0.0, 0.0), min_turn=0.0):
+    """Extra objective / constraint terms for the batched ("fast") spline solver.
+
+    Both callables receive a batch of variable vectors (B, k) and the batched
+    geometry ``(colors (B, M, 3), length (B,), fractions (B, M), bending (B,))``.
+    """
     base_chroma = max(base_jch[1], 1e-6)
+    scale = max(length_target, 1.0)
 
     def objective(problem, variables, geometry):
         colors, length, fractions, bending = geometry
         if not (chromatic and use_profile):
             return 0.0
         jch = _cam02ucs_to_jch(colors)
-        weight = np.clip(jch[:, 1] / base_chroma, 0, 1)
-        error = (hue_offset(jch[:, 2], base_jch[2]) - profile(colors[:, 0])) / HUE_PROFILE_SCALE
-        return HUE_PROFILE_WEIGHT * float(trapezoid(weight * error**2, fractions))
+        weight = np.clip(jch[..., 1] / base_chroma, 0, 1)
+        error = (hue_offset(jch[..., 2], base_jch[2]) - profile(colors[..., 0])) / HUE_PROFILE_SCALE
+        return HUE_PROFILE_WEIGHT * trapezoid(weight * error**2, fractions, axis=-1)
 
     def constraints(problem, variables, geometry):
-        coefficients = problem.coefficients(variables)
-        velocity = problem.first @ coefficients
-        speed = np.linalg.norm(velocity, axis=1)
+        colors, length, fractions, bending = geometry
+        coefficients = problem.coefficients_batch(variables)
+        velocity = np.matmul(problem.first, coefficients)
+        speed = np.sqrt(np.sum(velocity**2, axis=-1))
         parts = [
-            [geometry[1] / length_target - 1],
-            (velocity[:, 0] - slope * speed) / max(length_target, 1.0),
+            (length / length_target - 1)[:, None],
+            (velocity[..., 0] - slope * speed) / scale,
         ]
         # Each side of the base must carry its share, so the window stays centred.
-        position = geometry[2][np.searchsorted(problem.mesh, problem.anchor_parameters[0])]
-        for goal, side_length in zip(side_goals, (position, 1 - position)):
+        position = fractions[:, np.searchsorted(problem.mesh, problem.anchor_parameters[0])]
+        for goal, side in zip(side_goals, (position, 1 - position)):
             if goal > 0:
-                parts.append([side_length * geometry[1] / goal - 1])
+                parts.append((side * length / goal - 1)[:, None])
         if twist:
-            # Hue turns only in the twist direction: M'^2 dh/dt = a' b'_t - b' a'_t.
-            colors = geometry[0]
-            turning = colors[:, 1] * velocity[:, 2] - colors[:, 2] * velocity[:, 1]
-            # dh/dt >= min_turn (radians per unit parameter), scaled by M'^2 so it fades at grey.
-            squared = colors[:, 1]**2 + colors[:, 2]**2
-            parts.append((twist * turning - min_turn * squared) / max(length_target, 1.0)**2)
-        return np.concatenate(parts)
+            # Hue turns only in the twist direction, M'^2 dh/dt = a' b'_t - b' a'_t, at no
+            # less than min_turn radians per unit parameter (scaled by M'^2 so it fades at grey).
+            turning = colors[..., 1] * velocity[..., 2] - colors[..., 2] * velocity[..., 1]
+            squared = colors[..., 1]**2 + colors[..., 2]**2
+            parts.append((twist * turning - min_turn * squared) / scale**2)
+        return np.concatenate(parts, axis=1)
 
     return objective, constraints
 

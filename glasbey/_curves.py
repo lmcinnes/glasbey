@@ -304,8 +304,9 @@ def _validate_curve(spline, domain, anchor_parameters, samples=129):
 
 # Solver profiles. "default" is what create_colormap has always used.
 _PROFILES = {
-    "default": dict(mesh_points=None, refinements=4, validation_samples=129),
-    "fast": dict(mesh_points=65, refinements=3, validation_samples=65),
+    "default": dict(mesh_points=None, refinements=4, validation_samples=129, quadrature=8),
+    # Batched finite differences with explicit Jacobians; extras must accept a leading batch axis.
+    "fast": dict(mesh_points=65, refinements=3, validation_samples=65, quadrature=4),
 }
 
 
@@ -401,12 +402,14 @@ class _SplineProblem:
         self.safety = 1e-4 * np.clip(to_anchor / 0.02, 0, 1)[:, None]
         self.first = self.basis.derivative()(self.mesh)
         self.second = self.basis.derivative(2)(self.mesh)
-        nodes, weights = np.polynomial.legendre.leggauss(8)
+        nodes, weights = np.polynomial.legendre.leggauss(self._settings["quadrature"])
         half_width = np.diff(self.mesh) / 2
         locations = (self.mesh[:-1] + half_width)[:, None] + half_width[:, None] * nodes
         self.quadrature_weights = half_width[:, None] * weights
         self.quadrature_first = self.basis.derivative()(locations)
         self.quadrature_second = self.basis.derivative(2)(locations)
+        self._q1 = np.ascontiguousarray(self.quadrature_first.reshape(-1, self.quadrature_first.shape[-1]))
+        self._q2 = np.ascontiguousarray(self.quadrature_second.reshape(-1, self.quadrature_second.shape[-1]))
 
     def coefficients(self, variables):
         return self.fixed + self.scale * self.free @ variables.reshape(-1, 3)
@@ -436,9 +439,176 @@ class _SplineProblem:
         residual = self.soft_matrix @ self.coefficients(variables) - self.soft_anchors
         return float(np.sum(self.soft_weights * np.sum(residual**2, axis=1)) / self.scale**2)
 
+    # ------------------------------------------------------------ batched (fast profile)
+
+    def coefficients_batch(self, variables):
+        """Coefficients for a batch of variable vectors, shape (B, count, 3)."""
+        variables = np.asarray(variables).reshape(len(variables), -1, 3)
+        return self.fixed + self.scale * np.matmul(self.free, variables)
+
+    def geometry_batch(self, variables):
+        coefficients = self.coefficients_batch(variables)
+        batch = len(coefficients)
+        colors = np.matmul(self.values, coefficients)
+        intervals, nodes, count = self.quadrature_first.shape
+        velocity = np.matmul(self._q1, coefficients).reshape(batch, intervals, nodes, 3)
+        acceleration = np.matmul(self._q2, coefficients).reshape(batch, intervals, nodes, 3)
+        speed = np.maximum(np.sqrt(np.sum(velocity**2, axis=-1)), 1e-9)
+        cumulative = np.concatenate([
+            np.zeros((batch, 1)), np.cumsum(np.sum(speed * self.quadrature_weights, axis=2), axis=1),
+        ], axis=1)
+        length = np.maximum(cumulative[:, -1], 1e-9)
+        v, a = velocity, acceleration
+        cross = np.stack([
+            v[..., 1] * a[..., 2] - v[..., 2] * a[..., 1],
+            v[..., 2] * a[..., 0] - v[..., 0] * a[..., 2],
+            v[..., 0] * a[..., 1] - v[..., 1] * a[..., 0],
+        ], axis=-1)
+        bending = np.sum(np.sum(cross**2, axis=-1) / speed**5 * self.quadrature_weights, axis=(1, 2))
+        return colors, length, cumulative / length[:, None], bending, coefficients
+
+    def _solve_batched(self, initial, max_iter, smoothness, chroma_weight, chroma_scale,
+                       reference_length, arc_length_factor, length_weight, extra_objective,
+                       extra_constraints):
+        epsilon = np.sqrt(np.finfo(float).eps)
+
+        def objective_batch(batch):
+            colors, length, fractions, bending, coefficients = self.geometry_batch(batch)
+            geometry = (colors, length, fractions, bending)
+            reference = reference_length or self.scale
+            value = smoothness * reference * bending / (4 * np.pi**2)
+            if length_weight:
+                value = value + length_weight * (
+                    length / reference if reference_length is None else -length / reference
+                )
+            with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+                if chroma_weight:
+                    chroma = _cam02ucs_to_jch(colors)[..., 1]
+                    weight = 16 * fractions**2 * (1 - fractions)**2
+                    reward = trapezoid(weight * chroma, fractions, axis=-1) / (
+                        np.maximum(trapezoid(weight, fractions, axis=-1), 1e-12) * chroma_scale
+                    )
+                    value = value - chroma_weight * reward
+                sampled = colors[:, ::8]
+                separation = np.sqrt(np.sum((sampled[:, :, None] - sampled[:, None, :])**2, axis=-1))
+                along = np.abs(fractions[:, ::8, None] - fractions[:, None, ::8]) * length[:, None, None]
+                mask = along > length[:, None, None] * 0.2
+                ratio = np.where(mask, separation / np.where(mask, along, 1.0), 1.0)
+                penalty = np.where(mask, np.square(np.maximum(0, 0.2 - ratio)), 0.0)
+                counts = mask.sum(axis=(1, 2))
+                value = value + np.where(counts > 0, penalty.sum(axis=(1, 2)) / np.maximum(counts, 1), 0.0)
+                if len(self.soft_weights):
+                    residual = np.matmul(self.soft_matrix, coefficients) - self.soft_anchors
+                    value = value + np.sum(self.soft_weights * np.sum(residual**2, axis=-1), axis=-1) / self.scale**2
+                if extra_objective is not None:
+                    value = value + extra_objective(self, batch, geometry)
+            return np.where(np.isfinite(value), value, 1e12)
+
+        def constraints_batch(batch, safety=True):
+            colors, length, fractions, bending, coefficients = self.geometry_batch(batch)
+            geometry = (colors, length, fractions, bending)
+            count = len(batch)
+            margins = self.domain.margins(colors.reshape(-1, 3)).reshape(count, colors.shape[1], -1)
+            if safety:
+                margins = margins - self.safety[None]
+            result = [margins.reshape(count, -1)]
+            if self.monotone_lightness:
+                result.append(self.direction * np.diff(coefficients[:, :, 0], axis=1) / 100)
+            if reference_length is not None:
+                result.append((arc_length_factor - length / reference_length)[:, None])
+            if extra_constraints is not None:
+                result.append(np.asarray(extra_constraints(self, batch, geometry)).reshape(count, -1))
+            return np.concatenate(result, axis=1)
+
+        def perturbed(variables):
+            steps = epsilon * np.maximum(1.0, np.abs(variables))
+            return variables[None] + np.diag(steps), steps
+
+        def objective(variables):
+            return float(objective_batch(variables[None])[0])
+
+        def gradient(variables):
+            stack, steps = perturbed(variables)
+            values = objective_batch(np.vstack([variables[None], stack]))
+            return (values[1:] - values[0]) / steps
+
+        def constraints(variables, safety=True):
+            return constraints_batch(variables[None], safety)[0]
+
+        def jacobian(variables):
+            stack, steps = perturbed(variables)
+            values = constraints_batch(np.vstack([variables[None], stack]))
+            return ((values[1:] - values[0]) / steps[:, None]).T
+
+        return self._run_slsqp(initial, max_iter, objective, constraints, reference_length,
+                               arc_length_factor, gradient, jacobian)
+
+    def _run_slsqp(self, initial, max_iter, objective, constraints, reference_length,
+                   arc_length_factor, gradient=None, jacobian=None):
+        candidates = []
+
+        def retain(variables):
+            if constraints(variables, False).min() >= -_FEASIBILITY_TOL:
+                candidates.append((objective(variables), variables.copy()))
+                candidates.sort(key=lambda item: item[0])
+                del candidates[8:]
+
+        samples = self._settings["validation_samples"]
+        current = initial
+        retain(current)
+        remaining = max_iter
+        result = None
+        for refinement in range(self._settings["refinements"]):
+            constraint = {"type": "ineq", "fun": constraints}
+            if jacobian is not None:
+                constraint["jac"] = jacobian
+            result = minimize(
+                objective, current, method="SLSQP", jac=gradient,
+                constraints=constraint, callback=retain,
+                options={"maxiter": remaining, "ftol": 1e-9},
+            )
+            current = result.x
+            remaining -= max(1, result.nit)
+            valid, extra, depth = _validate_curve(
+                self.spline(current), self.domain, self.anchor_parameters, samples
+            )
+            if valid and constraints(current, False).min() >= -_FEASIBILITY_TOL:
+                arc = _Arc(self.spline(current), self.anchor_parameters)
+                if reference_length is None or arc.length <= (
+                    arc_length_factor * reference_length + 1e-5
+                ):
+                    return current, arc, result, depth
+            if remaining <= 0:
+                break
+            interval = np.clip(np.searchsorted(self.mesh, extra), 1, len(self.mesh) - 1)
+            neighbours = np.unique(np.concatenate([interval - 1, interval, np.minimum(interval + 1, len(self.mesh) - 1)]))
+            neighbours = neighbours[neighbours > 0]
+            self.mesh = np.unique(np.concatenate([
+                self.mesh, extra, (self.mesh[neighbours - 1] + self.mesh[neighbours]) / 2,
+            ]))
+            self._update_basis()
+        for score, candidate in sorted(candidates, key=lambda item: item[0]):
+            valid, extra, depth = _validate_curve(
+                self.spline(candidate), self.domain, self.anchor_parameters, samples
+            )
+            if valid and constraints(candidate, False).min() >= -_FEASIBILITY_TOL:
+                arc = _Arc(self.spline(candidate), self.anchor_parameters)
+                if reference_length is None or arc.length <= arc_length_factor * reference_length + 1e-5:
+                    if result is not None:
+                        result.success = False
+                        result.message = "Retained a feasible iterate; " + str(result.message)
+                    return candidate, arc, result, depth
+        return None
+
     def solve(self, initial, max_iter, smoothness=1.0, chroma_weight=0.0,
               chroma_scale=1.0, reference_length=None, arc_length_factor=1.5,
               *, length_weight=1.0, extra_objective=None, extra_constraints=None):
+        if self.profile == "fast":
+            return self._solve_batched(
+                initial, max_iter, smoothness, chroma_weight, chroma_scale, reference_length,
+                arc_length_factor, length_weight, extra_objective, extra_constraints,
+            )
+
         def objective(variables):
             colors, length, fractions, bending = geometry = self.geometry(variables)
             reference = reference_length or self.scale
