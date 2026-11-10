@@ -1,0 +1,56 @@
+# Changelog
+
+## 0.5.0
+
+### New block-palette algorithm
+
+`create_block_palette`, `extend_block_palette` and `create_theme_palette` now build
+each block as a smooth curve in CAM02-UCS through a base colour, sampled evenly by
+perceptual arc length, and choose the blocks' base colours knowing the block sizes.
+
+- Blocks run from dark to light with strictly increasing lightness, no repeated
+  colours, and even spacing (step variation under 5%, against 20-100% before),
+  including under tight lightness bounds where the old method produced repeated
+  colours and large hue jumps within a block.
+- Large blocks are given room to span most of the lightness range; small blocks
+  sit near middling lightness. Blocks are kept apart using a distance that
+  discounts lightness, since lightness is what varies within a block.
+- Blocks rotate a little in hue from their dark to their light end, all in the
+  same direction, which packs blocks more tightly.
+- With `optimize_palette=True`, palettes are polished at the block level (sliding
+  a block along its curve, slightly shrinking its step, or refitting a short block
+  from a nudged base). Colours never leave their block or change order.
+
+**Block palettes look different from 0.4.0.** This is intended. To reproduce
+0.4.0 output exactly, pass `theme_method="legacy"` (see below).
+
+### New parameters
+
+All keyword-only and optional, on `create_block_palette` and `extend_block_palette`:
+
+- `theme_step` (default 10): target CAM02-UCS distance between neighbouring colours
+  in a block. It shrinks automatically, with a warning below 4, when a block cannot
+  fit in the bounds.
+- `hue_sweep` (default `"auto"`): per-block hue rotation. A number caps the
+  rotation in degrees; `0` disables it. With `colorblind_safe=True` the sweep is
+  capped at 15 degrees.
+- `twist` (default `1`): the shared direction of hue rotation (`1`, `-1` or
+  `"auto"`, which favours light ends toward yellow).
+- `theme_method` (default `"arc"`): `"legacy"` runs the 0.4.0 algorithm unchanged
+  and emits a `FutureWarning`. It will be removed in a future release.
+
+### Deprecations
+
+- `theme_color_spacing` (block palettes) and `min_color_offset`
+  (`create_theme_palette`) are deprecated. If passed, they map to
+  `theme_step = 60 * value` (the old default 0.2 corresponds to 12) and emit a
+  `DeprecationWarning`.
+
+### Other changes
+
+- `optimize_palette_n_iter` and `optimize_palette_search_radius` now control
+  block-level polishing; the search radius is the maximum slide, in CAM02-UCS
+  distance, along a block's curve.
+- `extend_block_palette` is now listed in the API reference.
+- Internal: curve primitives moved to `glasbey/_curves.py`, with a fast NumPy
+  CAM02-UCS to sRGB conversion. `create_colormap` output is unchanged.
