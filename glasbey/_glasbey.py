@@ -22,7 +22,7 @@ from ._blocks import (
     plan_blocks,
 )
 from ._curves import _Grid
-from ._theme import DEFAULT_STEP, fit_theme_arc
+from ._theme import fit_theme_arc
 
 from typing import *
 
@@ -482,7 +482,7 @@ def _resolve_step(theme_step, legacy_value, legacy_name):
         if theme_step is None:
             theme_step = 60.0 * float(legacy_value)
     if theme_step is None:
-        theme_step = DEFAULT_STEP
+        return None  # size-dependent schedule
     if not np.isscalar(theme_step) or not np.isfinite(theme_step) or theme_step <= 0:
         raise ValueError("theme_step must be a positive finite number")
     return float(theme_step)
@@ -499,8 +499,8 @@ def _validate_block_options(grid_space, hue_sweep, twist, theme_method):
         if isinstance(hue_sweep, str) or not np.isscalar(hue_sweep) or not np.isfinite(hue_sweep) \
                 or hue_sweep < 0:
             raise ValueError('hue_sweep must be "auto" or a non-negative number of degrees')
-    if not (isinstance(twist, str) and twist == "auto") and twist not in (1, -1):
-        raise ValueError('twist must be "auto", 1 or -1')
+    if not (isinstance(twist, str) and twist in ("warm", "auto")) and twist not in (1, -1):
+        raise ValueError('twist must be "warm", "auto", 1 or -1')
 
 
 def _validate_block_sizes(block_sizes):
@@ -638,7 +638,7 @@ def _build_block_palette_with_diagnostics(
     theme_step=None,
     theme_color_spacing=None,
     hue_sweep="auto",
-    twist=1,
+    twist="warm",
     as_hex=True,
     optimize_palette=True,
     optimize_palette_n_iter=10,
@@ -687,7 +687,7 @@ def create_block_palette(
     optimize_palette_search_radius: int = 5,
     theme_step: Optional[float] = None,
     hue_sweep: Union[Literal["auto"], float] = "auto",
-    twist: Union[Literal["auto"], int] = 1,
+    twist: Union[Literal["warm", "auto"], int] = "warm",
     theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks.
@@ -767,9 +767,11 @@ def create_block_palette(
         block's base colour may be nudged, in one polishing move.
 
     theme_step: float or None (default None)
-        Target CAM02-UCS distance between adjacent colours within a block; ``None`` means 10. A block of
-        ``n`` colours aims for a perceptual length of ``(n - 1) * theme_step``. If a block cannot reach that
-        length inside the colour bounds its step shrinks automatically, with a warning when it falls below 4.
+        Target CAM02-UCS distance between adjacent colours within a block. ``None`` picks the step from the
+        block size: small blocks get large steps (about 32 for a pair, so its two colours are clearly a dark
+        and a light version of one hue) and large blocks smaller ones (about 10 for ten colours). A float
+        uses that step for every block. If a block cannot reach its length inside the colour bounds its step
+        shrinks automatically, with a warning when it falls below 4.
 
     theme_color_spacing: float or None (default None)
         Deprecated; use ``theme_step``. If given, it is mapped to ``theme_step = 60 * theme_color_spacing``
@@ -778,15 +780,17 @@ def create_block_palette(
     hue_sweep: "auto" or float (default "auto")
         How much each block may rotate in hue from its dark end to its light end. ``"auto"`` allocates a
         sweep per block from its size and the number of blocks, so larger blocks and palettes with fewer
-        blocks rotate more. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
+        blocks rotate more; pairs keep a single hue. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
         rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
         costs separation under colour vision deficiency.
 
-    twist: 1, -1 or "auto" (default 1)
-        The global direction in which the light ends of all blocks rotate: ``1`` toward increasing hue,
-        ``-1`` toward decreasing hue. ``"auto"`` chooses the direction that sends the most light ends toward
-        yellow. All blocks share one direction, which packs blocks more tightly; a fixed default keeps
-        palettes predictable.
+    twist: "warm", 1, -1 or "auto" (default "warm")
+        How blocks rotate in hue. ``"warm"`` keeps each block's dark end at its base hue and turns its light
+        end toward yellow, a warm highlight shift (reds lighten through orange, greens toward yellow-green;
+        blues, opposite yellow, mostly just pale).
+        ``1`` or ``-1`` instead rotate every block the same way around the hue circle, symmetrically about
+        its base, which packs blocks slightly more tightly; ``"auto"`` picks that shared direction to send
+        the most light ends toward yellow. Blocks of two colours never rotate.
 
     theme_method: "arc" or "legacy" (default "arc")
         ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block
@@ -846,7 +850,7 @@ def extend_block_palette(
     optimize_palette_search_radius: int = 2,
     theme_step: Optional[float] = None,
     hue_sweep: Union[Literal["auto"], float] = "auto",
-    twist: Union[Literal["auto"], int] = 1,
+    twist: Union[Literal["warm", "auto"], int] = "warm",
     theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Extend an existing palette with new blocks.
@@ -926,9 +930,11 @@ def extend_block_palette(
         block's base colour may be nudged, in one polishing move.
 
     theme_step: float or None (default None)
-        Target CAM02-UCS distance between adjacent colours within a block; ``None`` means 10. A block of
-        ``n`` colours aims for a perceptual length of ``(n - 1) * theme_step``. If a block cannot reach that
-        length inside the colour bounds its step shrinks automatically, with a warning when it falls below 4.
+        Target CAM02-UCS distance between adjacent colours within a block. ``None`` picks the step from the
+        block size: small blocks get large steps (about 32 for a pair, so its two colours are clearly a dark
+        and a light version of one hue) and large blocks smaller ones (about 10 for ten colours). A float
+        uses that step for every block. If a block cannot reach its length inside the colour bounds its step
+        shrinks automatically, with a warning when it falls below 4.
 
     theme_color_spacing: float or None (default None)
         Deprecated; use ``theme_step``. If given, it is mapped to ``theme_step = 60 * theme_color_spacing``
@@ -937,15 +943,17 @@ def extend_block_palette(
     hue_sweep: "auto" or float (default "auto")
         How much each block may rotate in hue from its dark end to its light end. ``"auto"`` allocates a
         sweep per block from its size and the number of blocks, so larger blocks and palettes with fewer
-        blocks rotate more. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
+        blocks rotate more; pairs keep a single hue. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
         rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
         costs separation under colour vision deficiency.
 
-    twist: 1, -1 or "auto" (default 1)
-        The global direction in which the light ends of all blocks rotate: ``1`` toward increasing hue,
-        ``-1`` toward decreasing hue. ``"auto"`` chooses the direction that sends the most light ends toward
-        yellow. All blocks share one direction, which packs blocks more tightly; a fixed default keeps
-        palettes predictable.
+    twist: "warm", 1, -1 or "auto" (default "warm")
+        How blocks rotate in hue. ``"warm"`` keeps each block's dark end at its base hue and turns its light
+        end toward yellow, a warm highlight shift (reds lighten through orange, greens toward yellow-green;
+        blues, opposite yellow, mostly just pale).
+        ``1`` or ``-1`` instead rotate every block the same way around the hue circle, symmetrically about
+        its base, which packs blocks slightly more tightly; ``"auto"`` picks that shared direction to send
+        the most light ends toward yellow. Blocks of two colours never rotate.
 
     theme_method: "arc" or "legacy" (default "arc")
         ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block

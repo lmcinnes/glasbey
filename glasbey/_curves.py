@@ -326,13 +326,16 @@ class _SplineProblem:
 
     def __init__(self, anchors, points, parameters, anchor_parameters, count, domain,
                  *, anchor_weights=None, direction=None, scale=None,
-                 monotone_lightness=True, profile="default"):
+                 monotone_lightness=True, profile="default", chroma_profile="mid"):
         anchors = np.atleast_2d(np.asarray(anchors, dtype=float))
         anchor_parameters = np.asarray(anchor_parameters, dtype=float)
         if profile not in _PROFILES:
             raise ValueError(f"Unknown solver profile {profile!r}")
         self.profile = profile
         self._settings = _PROFILES[profile]
+        # "mid" rewards chroma around the arc's middle; "uniform" along its whole length
+        # (fast profile only).
+        self.chroma_profile = chroma_profile
         if len(anchor_parameters) >= 2 and anchor_parameters[0] == 0 and anchor_parameters[-1] == 1:
             interior = list(anchor_parameters[1:-1])
         else:
@@ -484,7 +487,10 @@ class _SplineProblem:
             with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
                 if chroma_weight:
                     chroma = _cam02ucs_to_jch(colors)[..., 1]
-                    weight = 16 * fractions**2 * (1 - fractions)**2
+                    if self.chroma_profile == "uniform":
+                        weight = np.ones_like(fractions)
+                    else:
+                        weight = 16 * fractions**2 * (1 - fractions)**2
                     reward = trapezoid(weight * chroma, fractions, axis=-1) / (
                         np.maximum(trapezoid(weight, fractions, axis=-1), 1e-12) * chroma_scale
                     )

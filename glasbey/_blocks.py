@@ -18,7 +18,7 @@ from ._curves import _Domain, _Grid, _cam02ucs_to_jch
 from ._fastcolor import cam02ucs_to_srgb1
 from ._grids import rgb_grid, jch_grid
 from ._theme import (
-    DEFAULT_STEP, GREY_CHROMA, LIGHTNESS_DISCOUNT, MIN_STEP, _sample_window, chroma_to_colorfulness,
+    GREY_CHROMA, block_length, block_step, LIGHTNESS_DISCOUNT, MIN_STEP, _sample_window, chroma_to_colorfulness,
     discounted_distance, fit_theme_arc, gamut_table, hue_offset,
 )
 from ._converters import get_rgb_palette
@@ -36,16 +36,25 @@ SEP_MIN = 6.0
 CROWDING_WIDEN = 10.0
 HELIX_POINTS = 9
 HELIX_HUE_STEP = 2.0
-HELIX_COLORFULNESS = 0.85
-LONG_BASE_SCALE = 0.95
+HELIX_COLORFULNESS = 0.95
+LONG_BASE_SCALE = 1.0
 SHORT_POINTS = 5
 SHORT_LIGHTNESS_SPREAD = 0.45
 SHORT_TAPER = 0.3
 SHORT_CANDIDATE_LIGHTNESS = (30.0, 80.0)
-SHORT_CANDIDATE_CHROMA = (25.0, 70.0)
+SHORT_CANDIDATE_CHROMA = (25.0, np.inf)
 SHORT_CANDIDATE_GRID = 24
 BOUND_MARGIN = 3.0
 MAX_SWEEP = 150.0
+WARM_MAX_SWEEP = 60.0  # cap on the warm highlight shift, degrees
+WARM_DAMPING = 0.5  # how much less blues rotate than reds and greens (0-1)
+# Selection bias toward vivid colours: a bonus (in dE units) for base colourfulness M'
+# and for closeness to the saturated sRGB corners (red, green, blue, cyan, magenta, yellow).
+CHROMA_BONUS = 0.15
+CORNER_BONUS = 6.0
+CORNER_RADIUS = 0.6
+COLORBLIND_VIVIDNESS = 0.25
+_RGB_CORNERS = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 1, 1], [1, 0, 1], [1, 1, 0]], float)
 LONG_ENDPOINT_WEIGHT = 2.0
 
 
@@ -161,8 +170,8 @@ def non_lightness_length(size, length, lightness_span):
 
 def block_demand(size, length, lightness_span, mean_colorfulness, cap=None):
     """Wanted hue sweep in degrees for a block (Phase 4 demand)."""
-    if size <= 1:
-        return 0.0
+    if size <= 2:
+        return 0.0  # a pair rotating in hue no longer reads as one theme
     non_lightness = non_lightness_length(size, length, lightness_span)
     sweep = float(np.degrees(non_lightness / max(mean_colorfulness, 5.0)))
     sweep = min(sweep, MAX_SWEEP)
@@ -178,7 +187,7 @@ def usable_share(chromatic_blocks, lightness_bounds):
     )
 
 
-def plan_blocks(block_sizes, context, step=DEFAULT_STEP):
+def plan_blocks(block_sizes, context, step=None):
     jp_low, jp_high = context.jp_bounds
     span = max(jp_high - jp_low - 4.0, 1.0)
     colorfulness = _mean_colorfulness(context, jp_low + 2, jp_high - 2)
@@ -189,9 +198,9 @@ def plan_blocks(block_sizes, context, step=DEFAULT_STEP):
     for index, size in enumerate(block_sizes):
         size = int(size)
         kind = "point" if size == 1 else ("long" if size >= LONG_BLOCK_MIN else "short")
-        length = (size - 1) * step
+        length = block_length(size, step)
         demand = 0.0 if cap == 0 else block_demand(size, length, span, colorfulness, cap)
-        specs.append(BlockSpec(index, size, kind, length, step, demand, span,
+        specs.append(BlockSpec(index, size, kind, length, block_step(size, step), demand, span,
                                non_lightness_length(size, length, span)))
     return specs
 
@@ -207,6 +216,40 @@ def reserved_sweeps(specs, context):
 
 
 # ---------------------------------------------------------------- footprints
+
+
+def warm_direction(hue):
+    """+1 or -1: the hue direction toward yellow (where light, vivid colours live)."""
+    offset = hue_offset(YELLOW_HUE, np.asarray(hue, dtype=float))
+    return np.where(offset >= 0, 1.0, -1.0)
+
+
+def warm_limit(hue, sweep):
+    """Warm sweep for a block at ``hue``.
+
+    Hues on yellow's side of the wheel (reds, oranges, greens) take the full
+    sweep; hues opposite it (blues) rotate less, since a warm highlight there
+    should mostly pale the colour rather than turn it cyan. ``WARM_DAMPING``
+    sets how much less (0 none, 1 almost none for pure blue). Never rotates past
+    yellow.
+    """
+    offset = np.abs(hue_offset(YELLOW_HUE, np.asarray(hue, dtype=float)))
+    factor = 1 - WARM_DAMPING * (1 - np.cos(np.deg2rad(offset) / 2))
+    return np.minimum(sweep * factor, offset)
+
+
+def _footprint_hues(base_hue, t, sweep, twist):
+    """Hue along a footprint at parameters ``t`` in [-1, 1] (dark to light).
+
+    Numeric twists rotate symmetrically about the base; ``"warm"`` keeps the
+    dark half at the base hue and turns the light half toward yellow.
+    """
+    base_hue = np.asarray(base_hue, dtype=float)[:, None]
+    if twist == "warm":
+        direction = warm_direction(base_hue)
+        amount = warm_limit(base_hue, sweep)
+        return base_hue + direction * np.maximum(t[None, :], 0) * amount
+    return base_hue + twist * t[None, :] * sweep / 2
 
 
 def _polar_to_cam(jp, colorfulness, hue):
@@ -234,7 +277,7 @@ def helix_footprints(spec, context, sweep, twist, hues=None):
     hues = np.asarray(hues, dtype=float)
     t = np.linspace(-1, 1, HELIX_POINTS)
     jp = jp_mid + t * half
-    hue = hues[:, None] + twist * t[None, :] * sweep / 2
+    hue = _footprint_hues(hues, t, sweep, twist)
     colorfulness = HELIX_COLORFULNESS * context.gamut.max_colorfulness(
         np.broadcast_to(jp, hue.shape), hue % 360
     )
@@ -291,7 +334,7 @@ def short_footprints(spec, centres, centre_jch, context, sweep, twist):
     jp = centres[:, :1] + t[None, :] * SHORT_LIGHTNESS_SPREAD * spec.length
     jp = np.clip(jp, *context.jp_bounds)
     colorfulness = np.hypot(centres[:, 1], centres[:, 2])[:, None] * (1 - SHORT_TAPER * np.abs(t))[None]
-    hue = centre_jch[:, 2:3] + twist * t[None, :] * sweep / 2
+    hue = _footprint_hues(centre_jch[:, 2], t, sweep, twist)
     return _polar_to_cam(jp, colorfulness, hue)
 
 
@@ -309,6 +352,15 @@ def mid_band(context, widen=0.0):
 
 
 # ---------------------------------------------------------------- selection
+
+
+def vividness(points):
+    """Selection bonus for base colours: colourfulness plus closeness to sRGB corners."""
+    points = np.atleast_2d(points)
+    rgb = np.clip(np.nan_to_num(cam02ucs_to_srgb1(points)), 0, 1)
+    corner = np.linalg.norm(rgb[:, None, :] - _RGB_CORNERS, axis=-1).min(axis=1)
+    proximity = np.clip(1 - corner / CORNER_RADIUS, 0, 1)
+    return CHROMA_BONUS * np.hypot(points[:, 1], points[:, 2]) + CORNER_BONUS * proximity
 
 
 class _Placed:
@@ -437,13 +489,24 @@ def _cached_footprints(context, key, build):
     return cache[key]
 
 
+def _cached_vividness(context, key, points):
+    cache = context.diagnostics.setdefault("_vividness_cache", {})
+    if key not in cache:
+        # With colorblind_safe, CVD separation must dominate the aesthetic bias.
+        scale = COLORBLIND_VIVIDNESS if context.colorblind_safe else 1.0
+        cache[key] = scale * vividness(points)
+    return cache[key]
+
+
 def _place_long(spec, context, placed, sweep, twist):
     (points, hues, valid), simulated, extremes = _cached_footprints(
         context, ("long", spec.length, round(float(sweep), 6), twist),
         lambda: helix_footprints(spec, context, sweep, twist),
     )
     key = ("long", spec.length, round(float(sweep), 6), twist)
-    scores = np.where(valid, placed.score(points, simulated, extremes, key), -np.inf)
+    centres = points[:, HELIX_POINTS // 2] * np.array([1.0, LONG_BASE_SCALE, LONG_BASE_SCALE])
+    bonus = _cached_vividness(context, ("long-bonus",) + key[1:], centres)
+    scores = np.where(valid, placed.score(points, simulated, extremes, key) + bonus, -np.inf)
     best = int(np.argmax(scores))
     footprint = points[best]
     centre = footprint[HELIX_POINTS // 2]
@@ -463,13 +526,17 @@ def _place_short(spec, context, placed, sweep, twist, exclude=()):
     )
     raw = placed.score(footprints, simulated, extremes,
                        (spec.kind, spec.length, round(float(sweep), 6), twist))
+    bonus = _cached_vividness(context, ("short-bonus",), centres)
     crowded = False
     widen = 0.0
     while True:
         band = mid_band(context, widen)
         lightness = centre_jch[:, 0]
-        penalty = MID_PENALTY * np.maximum(0, np.maximum(band[0] - lightness, lightness - band[1]))
-        scores = raw - penalty
+        outside = np.maximum(0, np.maximum(band[0] - lightness, lightness - band[1]))
+        penalty = MID_PENALTY * outside
+        # The vividness bonus must not pull short blocks out of the band: only
+        # in-band candidates get it, so the soft penalty still decides at the edges.
+        scores = raw + np.where(outside > 0, 0.0, bonus) - penalty
         if exclude:
             scores[list(exclude)] = -np.inf
         best = int(np.argmax(scores))
@@ -593,6 +660,19 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
             sweeps[i] = demand[i]
             continue
         offsets = hue_offset(hues[neighbours], hues[i])
+        if twist == "warm":
+            # Only the light end turns, toward yellow; share the gap it turns into
+            # with a neighbour only if that neighbour's light end turns back toward it.
+            direction = float(warm_direction(hues[i]))
+            gaps = (direction * offsets) % 360
+            nearest = int(np.argmin(gaps))
+            gap, j = gaps[nearest], neighbours[nearest]
+            toward = float(warm_direction(hues[j])) == -direction
+            fraction = demand[i] / max(demand[i] + demand[j], 1e-9) if toward else 1.0
+            allowance = share * gap * fraction
+            sweeps[i] = min(demand[i], WARM_MAX_SWEEP, max(sweeps[i], allowance),
+                            float(warm_limit(hues[i:i + 1], np.inf)[0]))
+            continue
         halves = []
         for direction in (twist, -twist):  # the light end's gap, then the dark end's gap
             gaps = (direction * offsets) % 360
@@ -740,15 +820,21 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
         spec, footprint = specs[i], footprints[i]
         sweep = footprint.sweep if _cam02ucs_to_jch(footprint.base)[1] >= GREY_CHROMA else 0.0
         kwargs = {} if max_iter is None else {"max_iter": max_iter}
+        if footprint.twist == "warm":
+            twist = int(warm_direction(footprint.hue))
+            sweep = float(warm_limit(footprint.hue, sweep))
+            allowance = (0.0, sweep) if twist > 0 else (sweep, 0.0)
+        else:
+            twist, allowance = footprint.twist, (sweep / 2, sweep / 2)
         themes[i] = fit_theme_arc(
             footprint.base, spec.size, step=spec.step, domain=context.domain, gamut=context.gamut,
-            hue_allowance=(sweep / 2, sweep / 2), twist=footprint.twist,
+            hue_allowance=allowance, twist=twist,
             other_colors=np.vstack(others) if others else None, grid=context.grid,
             endpoint_targets=(footprint.points[0], footprint.points[-1]),
             soft_endpoints=LONG_ENDPOINT_WEIGHT if spec.kind == "long" else True, **kwargs,
         )
-        themes[i].diagnostics["allowance"] = (sweep / 2, sweep / 2)
-        themes[i].diagnostics["twist"] = footprint.twist
+        themes[i].diagnostics["allowance"] = allowance
+        themes[i].diagnostics["twist"] = twist
         others.append(themes[i].colors)
     return themes
 
@@ -940,7 +1026,7 @@ def blocks_to_output(states, as_hex=True):
     return output
 
 
-def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist=1,
+def build_block_palette(block_sizes, *, context=None, step=None, twist="warm",
                         fixed_colors=None, refine_rounds=None, optimize=False, n_iter=10,
                         search_radius=5.0, **context_options):
     """Run the block-palette pipeline; return (CAM02-UCS colours, diagnostics).
@@ -960,7 +1046,7 @@ def build_block_palette(block_sizes, *, context=None, step=DEFAULT_STEP, twist=1
     reserved = reserved_sweeps(specs, context)
     timings["plan"] = time.perf_counter() - start
     start = time.perf_counter()
-    sign = 1 if twist == "auto" else int(twist)
+    sign = 1 if twist == "auto" else (twist if twist == "warm" else int(twist))
     footprints, info = select_bases(specs, context, reserved, sign, fixed_colors)
     if twist == "auto":
         chosen = choose_twist(specs, footprints)

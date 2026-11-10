@@ -109,7 +109,8 @@ def test_twist_one_light_ends_have_higher_hue(twisted):
     for spec, offsets in _chromatic_offsets(diagnostics):
         assert offsets[-1] > offsets[0]
         checked += 1
-    assert checked >= len(sizes) - 1
+    # Pairs keep their hue; every larger block (bar at most one grey one) rotates.
+    assert checked >= sum(size >= 3 for size in sizes) - 1
 
 
 def test_long_blocks_ab_step_and_separation(twisted):

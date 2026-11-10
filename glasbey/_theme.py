@@ -21,7 +21,11 @@ from ._curves import _Domain, _Grid, _SplineProblem, _cam02ucs_to_jch
 from ._grids import rgb_grid
 
 # Tunable defaults (prototype values; see the implementation plan).
-DEFAULT_STEP = 10.0
+DEFAULT_STEP = 10.0  # fixed-step fallback; block palettes use block_step() by default
+# Block length grows sublinearly with size: L(n) = LENGTH_MAX (1 - exp(-(n - 1) STEP_INITIAL / LENGTH_MAX)),
+# so pairs get a large step (~32) and long blocks ~10, much as the 0.4.0 blocks did.
+STEP_INITIAL = 32.0
+LENGTH_MAX = 105.0
 MIN_STEP = 4.0
 BASE_MARGIN = 0.01
 INSET_FACTORS = (1.0, 0.97, 0.93, 0.88)
@@ -37,16 +41,38 @@ REACH_STRETCH = 1.15
 SIDE_SLACK = 0.85
 SOFT_ENDPOINT_WEIGHT = 2.0
 MIN_TURN_FRACTION = 0.3
+CHORD_ITERATIONS = 4
 ENDPOINT_HUE_WEIGHT = 0.4
 HUE_PROFILE_WEIGHT = 1.0
 HUE_PROFILE_SCALE = 20.0
-CHROMA_REWARD = 0.05
+CHROMA_REWARD = 0.5
+CHROMA_FLOOR = 0.7
 MIN_LIGHTNESS_SLOPE = 0.15
 MAX_LENGTH_FACTOR = 1.5
 LIGHTNESS_DISCOUNT = 0.35
 CHROMATIC_SPREAD_CHROMA = 15.0
 
 _FL4 = CIECAM02Space.sRGB.F_L**0.25
+
+
+def block_length(n, step=None):
+    """Target CAM02-UCS length of a block of ``n`` colours.
+
+    With ``step`` given the length is ``(n - 1) * step``; otherwise it follows
+    the size-dependent schedule (large steps for small blocks).
+    """
+    if n <= 1:
+        return 0.0
+    if step is not None:
+        return (n - 1) * float(step)
+    return float(LENGTH_MAX * -np.expm1(-(n - 1) * STEP_INITIAL / LENGTH_MAX))
+
+
+def block_step(n, step=None):
+    """Target distance between neighbouring colours in a block of ``n`` colours."""
+    if step is not None:
+        return float(step)
+    return block_length(n) / (n - 1) if n > 1 else 0.0
 
 
 def discounted_distance(a, b, w_j=LIGHTNESS_DISCOUNT):
@@ -171,8 +197,9 @@ def _hue_margin(hue, chroma, bounds):
     return angular
 
 
-def block_domain(base, domain, gamut, hue_allowance=(0.0, 0.0), chroma_floor=0.5):
+def block_domain(base, domain, gamut, hue_allowance=(0.0, 0.0), chroma_floor=None):
     """The global domain intersected with a block's hue window and chroma floor."""
+    chroma_floor = CHROMA_FLOOR if chroma_floor is None else chroma_floor
     base_jch = _cam02ucs_to_jch(base)
     chromatic = base_jch[1] >= GREY_CHROMA
     hue_bounds = domain.hue_bounds
@@ -372,10 +399,23 @@ def _route(grid, start, end):
 
 
 def _sample_window(arc, n, length, base_position, offset=0.0):
-    """Fractions of ``n`` evenly spaced samples covering ``length`` of the arc."""
+    """Fractions of ``n`` samples covering ``length`` of the arc with equal chords.
+
+    Samples start evenly spaced by arc length, then are respaced so the straight
+    distances between neighbours are equal (they differ on tightly curved arcs).
+    """
     width = min(1.0, length / arc.length)
     start = np.clip(base_position - width / 2 + offset / arc.length, 0.0, 1.0 - width)
-    return np.linspace(start, start + width, n), (float(start), float(start + width))
+    positions = np.linspace(start, start + width, n)
+    if n > 2:
+        for _ in range(CHORD_ITERATIONS):
+            chords = np.linalg.norm(np.diff(arc(positions), axis=0), axis=1)
+            if chords.min() <= 0 or chords.std() < 1e-4 * chords.mean():
+                break
+            cumulative = np.concatenate([[0.0], np.cumsum(chords)])
+            targets = np.linspace(0, cumulative[-1], n)
+            positions = np.interp(targets, cumulative, positions)
+    return positions, (float(start), float(start + width))
 
 
 def _best_offset(arc, n, length, base_position, other_colors):
@@ -418,8 +458,8 @@ def _diagnostics(colors, base_jch, target_length, arc_length, inset, fallback, s
     }
 
 
-def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_allowance=(0.0, 0.0),
-                  twist=1, chroma_floor=0.5, other_colors=None, grid=None, max_iter=MAX_ITER,
+def fit_theme_arc(base, n, *, step=None, domain=None, gamut=None, hue_allowance=(0.0, 0.0),
+                  twist=1, chroma_floor=None, other_colors=None, grid=None, max_iter=MAX_ITER,
                   warn=True, endpoint_targets=None, soft_endpoints=False):
     """Fit one block as a smooth arc through ``base`` and sample ``n`` colours.
 
@@ -430,8 +470,9 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
         smooth curve through it feasible.
     n : int
         Number of colours to sample.
-    step : float
-        Target CAM02-UCS distance between adjacent colours.
+    step : float or None
+        Target CAM02-UCS distance between adjacent colours; ``None`` uses the
+        size-dependent :func:`block_step` schedule.
     domain : _Domain
         Global colour domain (CIECAM02 bounds plus sRGB bounds).
     gamut : _GamutTable
@@ -462,6 +503,7 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
             None if domain.chroma_bounds is None else tuple(domain.chroma_bounds),
             tuple(map(tuple, domain.rgb_bounds)),
         )
+    step = block_step(n, step)
     target_length = (n - 1) * step
     base_jch = _cam02ucs_to_jch(base)
     if n == 1:
@@ -532,14 +574,16 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
             problem = _SplineProblem(
                 np.vstack(anchors), points, parameters, np.array(anchor_parameters),
                 CONTROL_POINTS, local, anchor_weights=weights, direction=1,
-                scale=max(length_goal, 1.0), profile="fast",
+                scale=max(length_goal, 1.0), profile="fast", chroma_profile="uniform",
             )
             share = SIDE_SLACK * length_goal / max(sum(side_reach), 1e-9)
             objective, constraints = _make_terms(
                 local_jch, profile, chromatic, use_profile, length_goal, MIN_LIGHTNESS_SLOPE, turn,
                 (share * side_reach[0] if anchor_index > 0 else 0.0,
                  share * side_reach[1] if anchor_index < len(points) - 1 else 0.0),
-                MIN_TURN_FRACTION * np.deg2rad(sum(hue_allowance)) if turn else 0.0,
+                # One-sided (warm) allowances keep the dark half at the base hue.
+                MIN_TURN_FRACTION * np.deg2rad(sum(hue_allowance))
+                if turn and min(hue_allowance) > 0 else 0.0,
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
