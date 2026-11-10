@@ -15,8 +15,14 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
 - Large blocks are given room to span most of the lightness range; small blocks
   sit near middling lightness. Blocks are kept apart using a distance that
   discounts lightness, since lightness is what varies within a block.
-- Blocks rotate a little in hue from their dark to their light end, all in the
-  same direction, which packs blocks more tightly.
+- Block length grows with block size but more slowly, so small blocks get large
+  steps: a pair is a clear dark and light version of one hue (step about 32),
+  while a ten-colour block steps by about 10.
+- Base colours favour rich, vivid colours near the saturated corners of RGB
+  (reds, blues, greens first), and blocks keep their chroma along their length.
+- A warm highlight shift: each block's light end turns toward yellow (reds
+  lighten through orange, greens toward yellow-green), blues rotate less and
+  mostly pale, and pairs keep a single hue.
 - With `optimize_palette=True`, palettes are polished at the block level (sliding
   a block along its curve, slightly shrinking its step, or refitting a short block
   from a nudged base). Colours never leave their block or change order.
@@ -28,14 +34,16 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
 
 All keyword-only and optional, on `create_block_palette` and `extend_block_palette`:
 
-- `theme_step` (default 10): target CAM02-UCS distance between neighbouring colours
-  in a block. It shrinks automatically, with a warning below 4, when a block cannot
-  fit in the bounds.
+- `theme_step` (default `None`): target CAM02-UCS distance between neighbouring
+  colours in a block. `None` uses the size-dependent schedule above; a number uses
+  that step for every block. Steps shrink automatically, with a warning below 4,
+  when a block cannot fit in the bounds.
 - `hue_sweep` (default `"auto"`): per-block hue rotation. A number caps the
   rotation in degrees; `0` disables it. With `colorblind_safe=True` the sweep is
   capped at 15 degrees.
-- `twist` (default `1`): the shared direction of hue rotation (`1`, `-1` or
-  `"auto"`, which favours light ends toward yellow).
+- `twist` (default `"warm"`): the warm highlight shift described above. `1` or
+  `-1` instead rotate every block the same way around the hue circle,
+  symmetrically about its base; `"auto"` picks that shared direction.
 - `theme_method` (default `"arc"`): `"legacy"` runs the 0.4.0 algorithm unchanged
   and emits a `FutureWarning`. It will be removed in a future release.
 
