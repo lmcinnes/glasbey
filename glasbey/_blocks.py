@@ -18,7 +18,7 @@ from ._curves import _Domain, _Grid, _cam02ucs_to_jch
 from ._fastcolor import cam02ucs_to_srgb1
 from ._grids import rgb_grid, jch_grid
 from ._theme import (
-    DEFAULT_STEP, GREY_CHROMA, LIGHTNESS_DISCOUNT, _sample_window, chroma_to_colorfulness,
+    DEFAULT_STEP, GREY_CHROMA, LIGHTNESS_DISCOUNT, MIN_STEP, _sample_window, chroma_to_colorfulness,
     discounted_distance, fit_theme_arc, gamut_table, hue_offset,
 )
 from ._converters import get_rgb_palette
@@ -240,7 +240,11 @@ def helix_footprints(spec, context, sweep, twist, hues=None):
     if context.chroma_bounds is not None:
         colorfulness = np.minimum(colorfulness, chroma_to_colorfulness(context.chroma_bounds[1]))
     points = _polar_to_cam(np.broadcast_to(jp, hue.shape), colorfulness, hue)
-    valid = _hue_allowed(hue % 360, context).all(axis=1) & (colorfulness[:, HELIX_POINTS // 2] > 1)
+    # The base (helix midpoint, scaled toward neutral) must clear the chroma lower bound.
+    minimum = chroma_to_colorfulness(context.chroma_bounds[0] + 2.0) / LONG_BASE_SCALE \
+        if context.chroma_bounds is not None else 1.0
+    valid = _hue_allowed(hue % 360, context).all(axis=1) & (
+        colorfulness[:, HELIX_POINTS // 2] > max(1.0, float(minimum)))
     return points, hues, valid
 
 
@@ -848,6 +852,8 @@ def polish_blocks(specs, themes, context, n_iter=10, search_radius=5.0, fixed_co
                 continue
             base_length = state.theme.step * (state.theme.size - 1)
             for scale in POLISH_SHRINKS:
+                if scale < 1.0 and state.theme.step * scale < MIN_STEP:
+                    continue  # never shrink an already short step further
                 for slide in np.linspace(-search_radius, search_radius, POLISH_SLIDES):
                     trial = _BlockState(state.theme, base_length * scale, state.offset + slide)
                     if scale == state.length / max(base_length, 1e-9) and slide == 0:

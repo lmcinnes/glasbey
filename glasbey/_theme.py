@@ -551,9 +551,9 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
                 return result
 
     if fallback_route is None:
-        # No feasible region around the base: return a degenerate lightness ramp.
-        colors = np.repeat(base[None], n, axis=0)
-        colors[:, 0] += np.linspace(-0.5, 0.5, n) * min(step, 2.0) * (n - 1)
+        # No feasible region around the base: use in-domain grid colours near it,
+        # spread in lightness, so the block is still valid and ordered.
+        colors = _nearest_ramp(base, n, step, grid)
         return ThemeArc(None, base, 0.5, colors, 0.0, (0.0, 1.0), domain,
                         _diagnostics(colors, base_jch, target_length, 0.0, 1.0, True, step))
     points, anchor_index, inset, inset_base = fallback_route
@@ -561,6 +561,23 @@ def fit_theme_arc(base, n, *, step=DEFAULT_STEP, domain=None, gamut=None, hue_al
     result = _finish(arc, n, step, target_length, inset_base, _cam02ucs_to_jch(inset_base), inset,
                      True, domain, other_colors, warn, require_monotone=False)
     return result
+
+
+def _nearest_ramp(base, n, step, grid):
+    """n grid colours near ``base`` with distinct lightness, ordered dark to light."""
+    colors = grid.colors
+    gap = max(2.5, min(step, 6.0))
+    order = np.argsort(discounted_distance(colors, base[None])[:, 0])
+    chosen = []
+    for index in order:
+        if all(abs(colors[index, 0] - colors[other, 0]) >= gap for other in chosen):
+            chosen.append(index)
+            if len(chosen) == n:
+                break
+    if len(chosen) < n:  # very narrow domain: relax the lightness gap
+        chosen = list(order[np.linspace(0, len(order) - 1, n).astype(int)])
+    result = colors[chosen]
+    return result[np.argsort(result[:, 0], kind="stable")]
 
 
 def _finish(arc, n, step, target_length, base, base_jch, inset, fallback, domain, other_colors,
