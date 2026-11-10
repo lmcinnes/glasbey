@@ -44,6 +44,7 @@ SHORT_TAPER = 0.3
 SHORT_CANDIDATE_LIGHTNESS = (30.0, 80.0)
 SHORT_CANDIDATE_CHROMA = (25.0, 70.0)
 SHORT_CANDIDATE_GRID = 24
+BOUND_MARGIN = 3.0
 MAX_SWEEP = 150.0
 LONG_ENDPOINT_WEIGHT = 2.0
 
@@ -268,10 +269,11 @@ def short_candidates(context):
         keep &= (jch[:, 1] >= chroma[0]) & (jch[:, 1] <= chroma[1])
         return keep & _hue_allowed(jch[:, 2], context)
 
-    lightness = (max(SHORT_CANDIDATE_LIGHTNESS[0], context.lightness_bounds[0]),
-                 min(SHORT_CANDIDATE_LIGHTNESS[1], context.lightness_bounds[1]))
-    chroma = (max(SHORT_CANDIDATE_CHROMA[0], context.chroma_bounds[0]),
-              min(SHORT_CANDIDATE_CHROMA[1], context.chroma_bounds[1]))
+    # Keep a small margin inside the user's bounds so bases can be inset.
+    lightness = (max(SHORT_CANDIDATE_LIGHTNESS[0], context.lightness_bounds[0] + BOUND_MARGIN),
+                 min(SHORT_CANDIDATE_LIGHTNESS[1], context.lightness_bounds[1] - BOUND_MARGIN))
+    chroma = (max(SHORT_CANDIDATE_CHROMA[0], context.chroma_bounds[0] + BOUND_MARGIN),
+              min(SHORT_CANDIDATE_CHROMA[1], context.chroma_bounds[1] - BOUND_MARGIN))
     keep = mask(lightness, chroma)
     if keep.sum() < 16:
         keep = mask(context.lightness_bounds, context.chroma_bounds)

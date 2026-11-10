@@ -25,6 +25,8 @@ DEFAULT_STEP = 10.0
 MIN_STEP = 4.0
 BASE_MARGIN = 0.01
 INSET_FACTORS = (1.0, 0.97, 0.93, 0.88)
+# Tried when a chroma lower bound stops the inset toward neutral.
+OUTSET_FACTORS = (1.04, 1.08, 1.12)
 GREY_CHROMA = 12.0
 HUE_WINDOW_PAD = 8.0
 ONE_SIDED_ROOM = 3.0
@@ -220,6 +222,13 @@ def _inset_base(base, domain, gamut, hue_allowance, chroma_floor):
             factor == INSET_FACTORS[-1] and local.contains(candidate)[0]
         ):
             yield factor, candidate, local
+    if domain.chroma_bounds is not None and domain.chroma_bounds[0] > 0:
+        # A base on the chroma lower bound cannot move toward neutral; move outward.
+        for factor in OUTSET_FACTORS:
+            candidate = np.array([base[0], base[1] * factor, base[2] * factor])
+            local = block_domain(candidate, domain, gamut, hue_allowance, chroma_floor)
+            if local.contains(candidate)[0]:
+                yield factor, candidate, local
     # Last resort: clamp into the lightness bounds and pull toward neutral.
     jch = _cam02ucs_to_jch(base)
     if domain.lightness_bounds is not None:

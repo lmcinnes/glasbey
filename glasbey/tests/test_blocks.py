@@ -167,3 +167,15 @@ def test_auto_twist_prefers_yellow_light_ends():
     above_yellow = Footprint(np.zeros((1, 3)), np.zeros(3), 160.0, 60.0, 1, "long")
     assert choose_twist([spec], [below_yellow]) == 1
     assert choose_twist([spec], [above_yellow]) == -1
+
+
+@pytest.mark.parametrize("lightness_bounds", [(40, 70), (30, 80)])
+def test_bases_on_chroma_lower_bound_do_not_fall_back(lightness_bounds):
+    # Short-block bases used to sit on the chroma lower bound, where insetting
+    # toward neutral is infeasible, forcing the last-resort fallback.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        colors, diagnostics = build_block_palette(
+            [5] * 20, context=make_context(lightness_bounds, (30, 80)))
+    assert diagnostics["fallbacks"] == 0
+    assert max(theme.diagnostics["step_cv"] for theme in diagnostics["themes"]) < 0.05
