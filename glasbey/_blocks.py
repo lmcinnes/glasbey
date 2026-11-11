@@ -53,6 +53,8 @@ MAX_SWEEP = 150.0
 WARM_NEAR_SETTINGS = (0.5, 60.0)
 WARM_FAR_SETTINGS = (1.0, 35.0)
 WARM_NEAR = 80.0
+# Extra block length (fraction) for hues far from yellow, which rotate less.
+FAR_LENGTH_STRETCH = 0.2
 # Whether footprints (and so base selection) assume the paler light ends too.
 FOOTPRINT_LIGHT_PROFILE = False
 WARM_FAR = 130.0
@@ -232,11 +234,22 @@ def warm_direction(hue):
     return np.where(offset >= 0, 1.0, -1.0)
 
 
-def _warm_settings(hue):
-    """(damping, cap) for the warm shift at ``hue``, blended by distance from yellow."""
+def far_weight(hue):
+    """0 for hues near yellow (reds, oranges, greens), 1 far from it (blues), smooth between."""
     offset = np.abs(hue_offset(YELLOW_HUE, np.asarray(hue, dtype=float)))
     weight = np.clip((offset - WARM_NEAR) / (WARM_FAR - WARM_NEAR), 0, 1)
-    weight = weight * weight * (3 - 2 * weight)  # smoothstep
+    return offset, weight * weight * (3 - 2 * weight)  # smoothstep
+
+
+def length_stretch(hue):
+    """Length multiplier for a block at ``hue``: blues, which barely rotate in hue,
+    get a longer (mostly lightness) range to stay as distinct within the block."""
+    return 1.0 + FAR_LENGTH_STRETCH * far_weight(hue)[1]
+
+
+def _warm_settings(hue):
+    """(damping, cap) for the warm shift at ``hue``, blended by distance from yellow."""
+    offset, weight = far_weight(hue)
     near, far = np.asarray(WARM_NEAR_SETTINGS), np.asarray(WARM_FAR_SETTINGS)
     damping = near[0] + weight * (far[0] - near[0])
     cap = near[1] + weight * (far[1] - near[1])
@@ -860,14 +873,16 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
             allowance = (0.0, sweep) if twist > 0 else (sweep, 0.0)
         else:
             twist, allowance = footprint.twist, (sweep / 2, sweep / 2)
+        step = spec.step * (float(length_stretch(footprint.hue)) if footprint.twist == "warm" else 1.0)
         themes[i] = fit_theme_arc(
-            footprint.base, spec.size, step=spec.step, domain=context.domain, gamut=context.gamut,
+            footprint.base, spec.size, step=step, domain=context.domain, gamut=context.gamut,
             hue_allowance=allowance, twist=twist,
             other_colors=np.vstack(others) if others else None, grid=context.grid,
             endpoint_targets=_profiled_ends(footprint),
             soft_endpoints=LONG_ENDPOINT_WEIGHT if spec.kind == "long" else True, **kwargs,
         )
         themes[i].diagnostics["allowance"] = allowance
+        themes[i].diagnostics["fit_step"] = step
         themes[i].diagnostics["twist"] = twist
         others.append(themes[i].colors)
     return themes
@@ -1003,7 +1018,8 @@ def polish_blocks(specs, themes, context, n_iter=10, search_radius=5.0, fixed_co
                 nudged = theme.base + away / norm * search_radius
                 refits += 1
                 refit = fit_theme_arc(
-                    nudged, theme.size, step=specs[index].step, domain=context.domain,
+                    nudged, theme.size, step=theme.diagnostics.get("fit_step", specs[index].step),
+                    domain=context.domain,
                     gamut=context.gamut, grid=context.grid, warn=False,
                     hue_allowance=(theme.diagnostics.get("allowance", (0.0, 0.0))),
                     twist=theme.diagnostics.get("twist", 1), other_colors=others,

@@ -24,7 +24,8 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
 - A warm highlight shift: each block's light end turns toward yellow (reds
   lighten through orange toward gold, greens toward yellow-green), while blues
   rotate much less and mostly pale. The strength of the shift depends on the
-  block's hue. Pairs keep a single hue.
+  block's hue; blues get up to 20% more length (mostly lightness range) to stay
+  as distinct within the block. Pairs keep a single hue.
 - With `optimize_palette=True`, palettes are polished at the block level (sliding
   a block along its curve, slightly shrinking its step, or refitting a short block
   from a nudged base). Colours never leave their block or change order.
