@@ -46,8 +46,14 @@ SHORT_CANDIDATE_CHROMA = (25.0, np.inf)
 SHORT_CANDIDATE_GRID = 24
 BOUND_MARGIN = 3.0
 MAX_SWEEP = 150.0
-WARM_MAX_SWEEP = 60.0  # cap on the warm highlight shift, degrees
-WARM_DAMPING = 0.5  # how much less blues rotate than reds and greens (0-1)
+# Warm highlight shift settings, (damping, cap in degrees), for hues near yellow
+# (reds, oranges, greens: offset <= WARM_NEAR) and far from it (blues: offset >=
+# WARM_FAR), blended smoothly in between. Damping 0 means hues far from yellow rotate
+# as much as near ones; 1 means pure blue barely rotates.
+WARM_NEAR_SETTINGS = (0.5, 75.0)
+WARM_FAR_SETTINGS = (1.0, 45.0)
+WARM_NEAR = 80.0
+WARM_FAR = 130.0
 # Selection bias toward vivid colours: a bonus (in dE units) for base colourfulness M'
 # and for closeness to the saturated sRGB corners (red, green, blue, cyan, magenta, yellow).
 CHROMA_BONUS = 0.15
@@ -224,17 +230,32 @@ def warm_direction(hue):
     return np.where(offset >= 0, 1.0, -1.0)
 
 
-def warm_limit(hue, sweep):
-    """Warm sweep for a block at ``hue``.
+def _warm_settings(hue):
+    """(damping, cap) for the warm shift at ``hue``, blended by distance from yellow."""
+    offset = np.abs(hue_offset(YELLOW_HUE, np.asarray(hue, dtype=float)))
+    weight = np.clip((offset - WARM_NEAR) / (WARM_FAR - WARM_NEAR), 0, 1)
+    weight = weight * weight * (3 - 2 * weight)  # smoothstep
+    near, far = np.asarray(WARM_NEAR_SETTINGS), np.asarray(WARM_FAR_SETTINGS)
+    damping = near[0] + weight * (far[0] - near[0])
+    cap = near[1] + weight * (far[1] - near[1])
+    return offset, damping, cap
 
-    Hues on yellow's side of the wheel (reds, oranges, greens) take the full
+
+def warm_cap(hue):
+    """Largest warm sweep (degrees) a block at ``hue`` may be allocated."""
+    return _warm_settings(hue)[2]
+
+
+def warm_limit(hue, sweep):
+    """Warm sweep actually applied to a block at ``hue``.
+
+    Hues on yellow's side of the wheel (reds, oranges, greens) take most of the
     sweep; hues opposite it (blues) rotate less, since a warm highlight there
-    should mostly pale the colour rather than turn it cyan. ``WARM_DAMPING``
-    sets how much less (0 none, 1 almost none for pure blue). Never rotates past
+    should mostly pale the colour rather than turn it cyan. Never rotates past
     yellow.
     """
-    offset = np.abs(hue_offset(YELLOW_HUE, np.asarray(hue, dtype=float)))
-    factor = 1 - WARM_DAMPING * (1 - np.cos(np.deg2rad(offset) / 2))
+    offset, damping, _ = _warm_settings(hue)
+    factor = 1 - damping * (1 - np.cos(np.deg2rad(offset) / 2))
     return np.minimum(sweep * factor, offset)
 
 
@@ -670,7 +691,7 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
             toward = float(warm_direction(hues[j])) == -direction
             fraction = demand[i] / max(demand[i] + demand[j], 1e-9) if toward else 1.0
             allowance = share * gap * fraction
-            sweeps[i] = min(demand[i], WARM_MAX_SWEEP, max(sweeps[i], allowance),
+            sweeps[i] = min(demand[i], float(warm_cap(hues[i])), max(sweeps[i], allowance),
                             float(warm_limit(hues[i:i + 1], np.inf)[0]))
             continue
         halves = []

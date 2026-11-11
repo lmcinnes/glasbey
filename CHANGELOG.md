@@ -21,8 +21,9 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
 - Base colours favour rich, vivid colours near the saturated corners of RGB
   (reds, blues, greens first), and blocks keep their chroma along their length.
 - A warm highlight shift: each block's light end turns toward yellow (reds
-  lighten through orange, greens toward yellow-green), blues rotate less and
-  mostly pale, and pairs keep a single hue.
+  lighten through orange toward gold, greens toward yellow-green), while blues
+  rotate much less and mostly pale. The strength of the shift depends on the
+  block's hue. Pairs keep a single hue.
 - With `optimize_palette=True`, palettes are polished at the block level (sliding
   a block along its curve, slightly shrinking its step, or refitting a short block
   from a nudged base). Colours never leave their block or change order.
