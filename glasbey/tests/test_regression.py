@@ -29,8 +29,10 @@ def colormap_expected():
 @pytest.mark.parametrize("name", sorted(COLORMAP_CASES))
 def test_create_colormap_unchanged(name, colormap_expected):
     sampled = glasbey.create_colormap(**COLORMAP_CASES[name]).sample(17)[1]
-    # Bit-identical on the generating platform; allow solver noise across BLAS builds.
-    np.testing.assert_allclose(sampled, colormap_expected[name], rtol=0, atol=1e-6)
+    # Bit-identical on the generating platform. Other numpy/scipy/BLAS builds move the
+    # SLSQP solution by ~1e-6 (main shows the same drift), so allow well under one
+    # 8-bit RGB level (1/255 ~ 4e-3).
+    np.testing.assert_allclose(sampled, colormap_expected[name], rtol=0, atol=1e-4)
 
 
 LEGACY_BLOCK_CASES = {
