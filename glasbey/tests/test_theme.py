@@ -127,3 +127,23 @@ def test_gamut_table_relaxes_near_extremes():
     dark = table.max_chroma(np.full_like(hues, 20.0), hues)
     assert np.all(middle > 20)
     assert dark.mean() < middle.mean()
+
+
+@pytest.mark.parametrize("rgb", [(0.2, 0.2, 0.2), (0.5, 0.5, 0.5), (0.26, 0.2, 0.2), (0.61, 0.66, 0.66)])
+def test_grey_base_below_chroma_floor(rgb):
+    # create_theme_palette's chroma bounds (10, 90) exclude grey bases: the base is
+    # pushed out past the bound instead of falling back to a short nearest-colour ramp,
+    # and the hue window still applies (the arc cannot pass through neutral).
+    from colorspacious import cspace_convert
+    from glasbey._blocks import make_context, plan_blocks
+
+    context = make_context((10.0, 90.0), (10.0, 90.0), (0.0, 360.0))
+    spec = plan_blocks([5], context, None)[0]
+    allowance = (spec.demand / 2, spec.demand / 2)
+    theme = fit_theme_arc(cspace_convert(rgb, "sRGB1", "CAM02-UCS"), 5, domain=context.domain,
+                          gamut=context.gamut, grid=context.grid, hue_allowance=allowance, twist=1)
+    assert not theme.diagnostics["fallback"]
+    assert theme.diagnostics["step"] >= 0.9 * spec.step
+    assert theme.diagnostics["hue_spread"] <= sum(allowance) + 2 * HUE_WINDOW_PAD
+    assert context.domain.contains(theme.colors).all()
+    assert np.all(np.diff(theme.colors[:, 0]) > 0)

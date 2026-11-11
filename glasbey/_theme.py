@@ -31,6 +31,8 @@ BASE_MARGIN = 0.01
 INSET_FACTORS = (1.0, 0.97, 0.93, 0.88)
 # Tried when a chroma lower bound stops the inset toward neutral.
 OUTSET_FACTORS = (1.04, 1.08, 1.12)
+# CIECAM02 chroma above the lower bound a below-bound base is projected to.
+CHROMA_PROJECT_MARGINS = (1.0, 2.5, 5.0)
 GREY_CHROMA = 12.0
 HUE_WINDOW_PAD = 8.0
 ONE_SIDED_ROOM = 3.0
@@ -214,7 +216,9 @@ def block_domain(base, domain, gamut, hue_allowance=(0.0, 0.0), chroma_floor=Non
     """The global domain intersected with a block's hue window and chroma floor."""
     chroma_floor = CHROMA_FLOOR if chroma_floor is None else chroma_floor
     base_jch = _cam02ucs_to_jch(base)
-    chromatic = base_jch[1] >= GREY_CHROMA
+    # Above a positive chroma lower bound the arc cannot pass through neutral, so
+    # the base hue is meaningful (and a free hue would swing to the opposite side).
+    chromatic = base_jch[1] >= min(GREY_CHROMA, _chroma_lower(domain) or np.inf)
     hue_bounds = domain.hue_bounds
     extra = []
     if domain.extra_margins is not None:
@@ -251,6 +255,27 @@ def block_domain(base, domain, gamut, hue_allowance=(0.0, 0.0), chroma_floor=Non
     return result
 
 
+def _chroma_lower(domain):
+    if domain.chroma_bounds is None or domain.chroma_bounds[0] <= 0:
+        return 0.0
+    return float(domain.chroma_bounds[0])
+
+
+def _with_chroma(base, chroma):
+    """``base`` moved radially in a'b' to CIECAM02 chroma ``chroma`` (same J', hue)."""
+    ab = np.asarray(base[1:], dtype=float)
+    norm = float(np.hypot(*ab))
+    unit = ab / norm if norm > 1e-9 else np.array([1.0, 0.0])
+    low, high = 0.0, 100.0
+    for _ in range(40):
+        middle = (low + high) / 2
+        if _cam02ucs_to_jch(np.array([base[0], *(middle * unit)]))[1] < chroma:
+            low = middle
+        else:
+            high = middle
+    return np.array([base[0], *(high * unit)])
+
+
 def _inset_base(base, domain, gamut, hue_allowance, chroma_floor):
     # Margin to the global bounds only: the hue window and chroma floor are
     # centred on the base by construction.
@@ -263,7 +288,16 @@ def _inset_base(base, domain, gamut, hue_allowance, chroma_floor):
             factor == INSET_FACTORS[-1] and local.contains(candidate)[0]
         ):
             yield factor, candidate, local
-    if domain.chroma_bounds is not None and domain.chroma_bounds[0] > 0:
+    lower = _chroma_lower(domain)
+    if lower and _cam02ucs_to_jch(base)[1] < lower + CHROMA_PROJECT_MARGINS[-1]:
+        # A base below (or on) the chroma lower bound, e.g. a grey: push it radially
+        # out past the bound, keeping its lightness and hue.
+        for margin in CHROMA_PROJECT_MARGINS:
+            candidate = _with_chroma(base, lower + margin)
+            local = block_domain(candidate, domain, gamut, hue_allowance, chroma_floor)
+            if plain.margins(candidate).min() >= BASE_MARGIN and local.contains(candidate)[0]:
+                yield 1.0, candidate, local
+    if lower:
         # A base on the chroma lower bound cannot move toward neutral; move outward.
         for factor in OUTSET_FACTORS:
             candidate = np.array([base[0], base[1] * factor, base[2] * factor])
