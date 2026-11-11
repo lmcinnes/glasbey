@@ -14,7 +14,7 @@ import glasbey
 FIXTURES = Path(__file__).parent / "fixtures"
 COLORMAP_CASES = {
     "sequential": dict(seed_colors=["#bdd8e8", "#324555", "#64809b"], grid_size=12, max_iter=80),
-    "diverging": dict(seed_colors=["#426ba0", "#eee8e0", "#a35742"], mode="diverging",
+    "diverging": dict(seed_colors=["#4a6fa5", "#efefef", "#b5603a"], mode="diverging",
                       grid_size=12, max_iter=80),
     "grey_vibrant": dict(seed_colors=["#333333", "#dddddd"], grid_size=12, arc_length_factor=1.3,
                          smoothness=3, chroma_weight=5, max_iter=80),
