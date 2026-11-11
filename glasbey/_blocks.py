@@ -19,7 +19,7 @@ from ._fastcolor import cam02ucs_to_srgb1
 from ._grids import rgb_grid, jch_grid
 from ._theme import (
     GREY_CHROMA, block_length, block_step, LIGHTNESS_DISCOUNT, MIN_STEP, _sample_window, chroma_to_colorfulness,
-    discounted_distance, fit_theme_arc, gamut_table, hue_offset,
+    discounted_distance, fit_theme_arc, gamut_table, hue_offset, lightness_chroma_profile,
 )
 from ._converters import get_rgb_palette
 
@@ -50,9 +50,11 @@ MAX_SWEEP = 150.0
 # (reds, oranges, greens: offset <= WARM_NEAR) and far from it (blues: offset >=
 # WARM_FAR), blended smoothly in between. Damping 0 means hues far from yellow rotate
 # as much as near ones; 1 means pure blue barely rotates.
-WARM_NEAR_SETTINGS = (0.5, 75.0)
-WARM_FAR_SETTINGS = (1.0, 45.0)
+WARM_NEAR_SETTINGS = (0.5, 60.0)
+WARM_FAR_SETTINGS = (1.0, 35.0)
 WARM_NEAR = 80.0
+# Whether footprints (and so base selection) assume the paler light ends too.
+FOOTPRINT_LIGHT_PROFILE = False
 WARM_FAR = 130.0
 # Selection bias toward vivid colours: a bonus (in dE units) for base colourfulness M'
 # and for closeness to the saturated sRGB corners (red, green, blue, cyan, magenta, yellow).
@@ -301,7 +303,7 @@ def helix_footprints(spec, context, sweep, twist, hues=None):
     hue = _footprint_hues(hues, t, sweep, twist)
     colorfulness = HELIX_COLORFULNESS * context.gamut.max_colorfulness(
         np.broadcast_to(jp, hue.shape), hue % 360
-    )
+    ) * (lightness_chroma_profile(np.broadcast_to(jp, hue.shape)) if FOOTPRINT_LIGHT_PROFILE else 1.0)
     if context.chroma_bounds is not None:
         colorfulness = np.minimum(colorfulness, chroma_to_colorfulness(context.chroma_bounds[1]))
     points = _polar_to_cam(np.broadcast_to(jp, hue.shape), colorfulness, hue)
@@ -355,6 +357,9 @@ def short_footprints(spec, centres, centre_jch, context, sweep, twist):
     jp = centres[:, :1] + t[None, :] * SHORT_LIGHTNESS_SPREAD * spec.length
     jp = np.clip(jp, *context.jp_bounds)
     colorfulness = np.hypot(centres[:, 1], centres[:, 2])[:, None] * (1 - SHORT_TAPER * np.abs(t))[None]
+    if FOOTPRINT_LIGHT_PROFILE:
+        colorfulness = colorfulness * (lightness_chroma_profile(jp)
+                                       / lightness_chroma_profile(centres[:, :1]))
     hue = _footprint_hues(centre_jch[:, 2], t, sweep, twist)
     return _polar_to_cam(jp, colorfulness, hue)
 
@@ -832,6 +837,14 @@ def refine(specs, footprints, info, context, reserved, twist, fixed_colors=None,
 # ---------------------------------------------------------------- fitting
 
 
+def _profiled_ends(footprint):
+    """Footprint ends with the light-end chroma profile applied (the fit's targets)."""
+    ends = footprint.points[[0, -1]].copy()
+    if not FOOTPRINT_LIGHT_PROFILE:
+        ends[:, 1:] *= lightness_chroma_profile(ends[:, 0])[:, None]
+    return ends[0], ends[1]
+
+
 def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
     """Fit each block's theme arc, largest first, avoiding colours already fitted."""
     order = sorted(range(len(specs)), key=lambda i: -specs[i].size)
@@ -851,7 +864,7 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
             footprint.base, spec.size, step=spec.step, domain=context.domain, gamut=context.gamut,
             hue_allowance=allowance, twist=twist,
             other_colors=np.vstack(others) if others else None, grid=context.grid,
-            endpoint_targets=(footprint.points[0], footprint.points[-1]),
+            endpoint_targets=_profiled_ends(footprint),
             soft_endpoints=LONG_ENDPOINT_WEIGHT if spec.kind == "long" else True, **kwargs,
         )
         themes[i].diagnostics["allowance"] = allowance

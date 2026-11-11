@@ -19,7 +19,8 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
   steps: a pair is a clear dark and light version of one hue (step about 32),
   while a ten-colour block steps by about 10.
 - Base colours favour rich, vivid colours near the saturated corners of RGB
-  (reds, blues, greens first), and blocks keep their chroma along their length.
+  (reds, blues, greens first). Blocks keep their chroma through dark and middle
+  lightness and ease into softer tints at their light end.
 - A warm highlight shift: each block's light end turns toward yellow (reds
   lighten through orange toward gold, greens toward yellow-green), while blues
   rotate much less and mostly pale. The strength of the shift depends on the

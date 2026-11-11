@@ -46,6 +46,12 @@ ENDPOINT_HUE_WEIGHT = 0.4
 HUE_PROFILE_WEIGHT = 1.0
 HUE_PROFILE_SCALE = 20.0
 CHROMA_REWARD = 0.5
+# Lightness profile for chroma: full chroma up to J' = LIGHT_CHROMA_PIVOT, easing down
+# by LIGHT_CHROMA_DROP (a fraction) by J' = LIGHT_CHROMA_TOP, so light ends are paler
+# tints. Used by footprints, the arc's chroma reward and the chroma floor.
+LIGHT_CHROMA_DROP = 0.7
+LIGHT_CHROMA_PIVOT = 70.0
+LIGHT_CHROMA_TOP = 97.0
 CHROMA_FLOOR = 0.7
 MIN_LIGHTNESS_SLOPE = 0.15
 MAX_LENGTH_FACTOR = 1.5
@@ -53,6 +59,13 @@ LIGHTNESS_DISCOUNT = 0.35
 CHROMATIC_SPREAD_CHROMA = 15.0
 
 _FL4 = CIECAM02Space.sRGB.F_L**0.25
+
+
+def lightness_chroma_profile(jp):
+    """Relative chroma wanted at CAM02-UCS lightness ``jp`` (1 = full, lower at the light end)."""
+    x = np.clip((np.asarray(jp, dtype=float) - LIGHT_CHROMA_PIVOT)
+                / (LIGHT_CHROMA_TOP - LIGHT_CHROMA_PIVOT), 0, 1)
+    return 1 - LIGHT_CHROMA_DROP * x * x * (3 - 2 * x)
 
 
 def block_length(n, step=None):
@@ -220,6 +233,7 @@ def block_domain(base, domain, gamut, hue_allowance=(0.0, 0.0), chroma_floor=Non
 
         def floor_margin(colors, jch):
             limit = np.minimum(floor_chroma, chroma_floor * gamut.max_chroma(colors[:, 0], jch[:, 2]))
+            limit = limit * lightness_chroma_profile(colors[:, 0])
             return ((jch[:, 1] - limit) / 100)[:, None]
 
         if chroma_floor > 0:
@@ -574,7 +588,7 @@ def fit_theme_arc(base, n, *, step=None, domain=None, gamut=None, hue_allowance=
             problem = _SplineProblem(
                 np.vstack(anchors), points, parameters, np.array(anchor_parameters),
                 CONTROL_POINTS, local, anchor_weights=weights, direction=1,
-                scale=max(length_goal, 1.0), profile="fast", chroma_profile="uniform",
+                scale=max(length_goal, 1.0), profile="fast", chroma_profile=lightness_chroma_profile,
             )
             share = SIDE_SLACK * length_goal / max(sum(side_reach), 1e-9)
             objective, constraints = _make_terms(

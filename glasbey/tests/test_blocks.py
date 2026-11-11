@@ -18,14 +18,15 @@ def built(request):
     sizes = CONFIGS[request.param]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        colors, diagnostics = build_block_palette(sizes, context=make_context())
+        # Public defaults: block polishing on.
+        colors, diagnostics = build_block_palette(sizes, context=make_context(), optimize=True)
     return sizes, colors, diagnostics
 
 
 def test_fitted_separation(built):
     sizes, colors, diagnostics = built
     assert len(colors) == sum(sizes)
-    assert diagnostics["separation"] >= 9.5
+    assert diagnostics["palette_separation"] >= 9.5
 
 
 def test_short_bases_in_mid_band_and_long_spans(built):
@@ -113,15 +114,15 @@ def test_twist_one_light_ends_have_higher_hue(twisted):
     assert checked >= sum(size >= 3 for size in sizes) - 1
 
 
-def test_long_blocks_ab_step_and_separation(twisted):
-    sizes, colors, diagnostics = twisted
+def test_long_blocks_ab_step_and_separation(built):
+    sizes, colors, diagnostics = built
     steps, counts = [], []
     for spec, theme in zip(diagnostics["specs"], diagnostics["themes"]):
         if spec.kind == "long":
             steps.append(np.linalg.norm(np.diff(theme.colors[:, 1:], axis=0), axis=1).sum())
             counts.append(spec.size - 1)
     assert sum(steps) / sum(counts) >= 4.0
-    assert diagnostics["separation"] >= 9.5
+    assert diagnostics["palette_separation"] >= 9.5
 
 
 def test_zero_hue_sweep_keeps_hue_constant():

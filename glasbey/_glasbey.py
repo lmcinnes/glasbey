@@ -692,7 +692,8 @@ def create_block_palette(
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
     """Create a categorical color palette in blocks.
     Each block is a range of colors on a smooth curve around a base colour, ordered from dark to light and
-    spaced evenly by perceptual distance; the base colours are chosen, knowing the block sizes, to keep the
+    spaced evenly by perceptual distance, rich through its darker colours and easing into softer tints at its
+    light end; the base colours are chosen, knowing the block sizes, to keep the
     blocks as distinct from one another as possible within the constraints on hue, chroma and lightness. This is
     most useful for two layer hierarchical categories, where the top layer categories each get their own block,
     and the finer grained sub-categories get their own colour within the block.
