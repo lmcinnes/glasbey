@@ -188,14 +188,30 @@ def test_extend_palette_colorblind_safe(palette_to_extend):
     )
 
 
-def test_block_palette_colorblind():
-    pal = create_block_palette(
-        [4, 4, 4, 4], colorblind_safe=True, cvd_severity=100.0, as_hex=False
-    )
-    jch_pal = cspace_convert(pal, "sRGB1", "JCh")
+@pytest.mark.parametrize("cvd_severity", [50.0, 100.0])
+def test_block_palette_colorblind(cvd_severity):
+    # Under simulated colour vision deficiency, blocks must stay at least as far
+    # apart as the 0.4.0 algorithm managed (lightness-discounted CAM02-UCS distance).
+    import warnings
 
-    # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
-    assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))
+    from glasbey._theme import discounted_distance
+
+    sizes = [4, 4, 4, 4]
+    cvd_space = {"name": "sRGB1+CVD", "cvd_type": "deuteranomaly", "severity": cvd_severity}
+
+    def separation(palette):
+        simulated = cspace_convert(np.clip(cspace_convert(palette, cvd_space, "sRGB1"), 0, 1),
+                                   "sRGB1", "CAM02-UCS")
+        blocks = np.split(simulated, np.cumsum(sizes)[:-1])
+        return min(discounted_distance(blocks[i], blocks[j]).min()
+                   for i in range(len(blocks)) for j in range(i + 1, len(blocks)))
+
+    pal = create_block_palette(sizes, colorblind_safe=True, cvd_severity=cvd_severity, as_hex=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy = create_block_palette(sizes, colorblind_safe=True, cvd_severity=cvd_severity,
+                                      as_hex=False, theme_method="legacy")
+    assert separation(np.asarray(pal)) >= separation(np.asarray(legacy))
 
 
 def test_palette_to_sRGB1_mixed_int_float_channels():
