@@ -50,7 +50,7 @@ def test_selection_speed_twenty_blocks(colorblind_safe):
     footprints, info = select_bases(specs, context, sweeps, 1)
     elapsed = time.perf_counter() - start
     assert len(footprints) == 20
-    # Target 0.5 s on a CI core (see dev/benchmarks); allow headroom for slow runners.
+    # Target 0.5 s on a CI core; allow headroom for slow runners.
     assert elapsed < (1.0 if not colorblind_safe else 2.0)
 
 

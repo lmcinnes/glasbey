@@ -128,6 +128,3 @@ dmypy.json
 # Pyre type checker
 .pyre/
 .vscode/settings.json
-
-# Evaluation harness output
-dev/eval/results/
