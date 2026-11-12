@@ -85,3 +85,13 @@ def test_grid_reuse_and_restriction():
     rebuilt = _Grid.from_colors(domain, grid.colors)
     np.testing.assert_array_equal(rebuilt.colors, grid.colors)
     np.testing.assert_allclose(rebuilt.chroma, grid.chroma, atol=1e-6)
+
+
+def test_grid_from_colors_dedupes_and_keeps_chroma_aligned():
+    domain = _Domain((10, 90), (0, 80), fast=True)
+    base = _Grid(domain, 12, "RGB", np.zeros((0, 3))).colors
+    shuffled = np.random.default_rng(0).permutation(np.vstack([base, base[:40]]))
+    grid = _Grid.from_colors(domain, shuffled)
+    assert len(grid.colors) == len(base) == len(grid.chroma)
+    np.testing.assert_allclose(grid.chroma, _cam02ucs_to_jch(grid.colors)[:, 1])
+    grid.restricted(_Domain((40, 60), (0, 80), fast=True))  # used to raise IndexError

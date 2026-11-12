@@ -91,6 +91,7 @@ class BlockSpec:
     demand: float = 0.0  # wanted hue sweep in degrees
     lightness_span: float = 0.0  # reachable J' extent
     non_lightness: float = 0.0  # wanted a'b' length L_ab
+    auto_step: bool = True  # step from the size schedule (not a caller's theme_step)
 
 
 @dataclass
@@ -211,7 +212,7 @@ def plan_blocks(block_sizes, context, step=None):
         length = block_length(size, step)
         demand = 0.0 if cap == 0 else block_demand(size, length, span, colorfulness, cap)
         specs.append(BlockSpec(index, size, kind, length, block_step(size, step), demand, span,
-                               non_lightness_length(size, length, span)))
+                               non_lightness_length(size, length, span), step is None))
     return specs
 
 
@@ -293,6 +294,19 @@ def _polar_to_cam(jp, colorfulness, hue):
     return np.stack([jp, colorfulness * np.cos(radians), colorfulness * np.sin(radians)], axis=-1)
 
 
+def hue_window_width(context):
+    """Width in degrees of the global hue window, or None for the full circle."""
+    if context.hue_bounds == (0.0, 360.0):
+        return None
+    return float((context.hue_bounds[1] - context.hue_bounds[0]) % 360)
+
+
+def clip_sweep(context, sweep):
+    """A block cannot rotate through more hue than the global window allows."""
+    width = hue_window_width(context)
+    return sweep if width is None else np.minimum(sweep, width)
+
+
 def _hue_allowed(hue, context):
     if context.hue_bounds == (0.0, 360.0):
         return np.ones(np.shape(hue), dtype=bool)
@@ -308,9 +322,17 @@ def helix_footprints(spec, context, sweep, twist, hues=None):
     jp_low, jp_high = context.jp_bounds
     jp_mid = (jp_low + jp_high) / 2
     half = max(0.0, min(spec.length / 2, (jp_high - jp_low) / 2 - 2))
+    width = hue_window_width(context)
     if hues is None:
-        hues = np.arange(0, 360, HELIX_HUE_STEP)
+        if width is None:
+            hues = np.arange(0, 360, HELIX_HUE_STEP)
+        else:
+            # Candidates inside the window, edges and midpoint included, so a
+            # footprint no wider than the window always has a valid position.
+            count = max(int(np.ceil(width / HELIX_HUE_STEP)) + 1, 9)
+            hues = (context.hue_bounds[0] + np.linspace(0, width, count)) % 360
     hues = np.asarray(hues, dtype=float)
+    sweep = clip_sweep(context, sweep)
     t = np.linspace(-1, 1, HELIX_POINTS)
     jp = jp_mid + t * half
     hue = _footprint_hues(hues, t, sweep, twist)
@@ -538,6 +560,7 @@ def _cached_vividness(context, key, points):
 
 
 def _place_long(spec, context, placed, sweep, twist):
+    sweep = float(clip_sweep(context, sweep))
     (points, hues, valid), simulated, extremes = _cached_footprints(
         context, ("long", spec.length, round(float(sweep), 6), twist),
         lambda: helix_footprints(spec, context, sweep, twist),
@@ -545,7 +568,10 @@ def _place_long(spec, context, placed, sweep, twist):
     key = ("long", spec.length, round(float(sweep), 6), twist)
     centres = points[:, HELIX_POINTS // 2] * np.array([1.0, LONG_BASE_SCALE, LONG_BASE_SCALE])
     bonus = _cached_vividness(context, ("long-bonus",) + key[1:], centres)
-    scores = np.where(valid, placed.score(points, simulated, extremes, key) + bonus, -np.inf)
+    raw = placed.score(points, simulated, extremes, key) + bonus
+    # If no footprint clears every constraint (e.g. chroma), still pick by score:
+    # an all -inf argmax would hand every long block the same first candidate.
+    scores = np.where(valid, raw, -np.inf) if valid.any() else raw
     best = int(np.argmax(scores))
     footprint = points[best]
     centre = footprint[HELIX_POINTS // 2]
@@ -724,6 +750,7 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
     for i in range(count):
         if i not in chromatic:
             sweeps[i] = 0.0
+    sweeps = np.asarray(clip_sweep(context, sweeps), dtype=float)
     footprints = [rebuild_footprint(spec, footprint, context, sweep, twist)
                   for spec, footprint, sweep in zip(specs, footprints, sweeps)]
     for round_ in range(SHRINK_ROUNDS):
@@ -740,10 +767,14 @@ def allocate_sweeps(specs, footprints, context, reserved, twist):
     return footprints, sweeps
 
 
-def _pair_minima(footprints, w_j=LIGHTNESS_DISCOUNT):
-    """(K, K) matrix of minimum discounted distances between footprints (inf on the diagonal)."""
-    points = np.vstack([footprint.points for footprint in footprints])
-    starts = np.cumsum([0] + [len(footprint.points) for footprint in footprints[:-1]])
+def _pair_minima(footprints, w_j=LIGHTNESS_DISCOUNT, points_list=None):
+    """(K, K) matrix of minimum discounted distances between footprints (inf on the diagonal).
+
+    ``points_list`` replaces the footprints' points (e.g. CVD-simulated ones).
+    """
+    points_list = [footprint.points for footprint in footprints] if points_list is None else points_list
+    points = np.vstack(points_list)
+    starts = np.cumsum([0] + [len(p) for p in points_list[:-1]])
     distances = discounted_distance(points, points, w_j)
     result = np.minimum.reduceat(np.minimum.reduceat(distances, starts, axis=0), starts, axis=1)
     np.fill_diagonal(result, np.inf)
@@ -816,6 +847,10 @@ def refine(specs, footprints, info, context, reserved, twist, fixed_colors=None,
         moves = []
         # Only moves touching blocks in the closest pairs can raise the minimum separation.
         minima = _pair_minima(footprints) if len(footprints) > 1 else np.zeros((1, 1))
+        if context.colorblind_safe and len(footprints) > 1:
+            # Target the pairs closest under the objective's own (normal and CVD) metric.
+            minima = np.minimum(minima, _pair_minima(
+                footprints, points_list=[context.cvd(f.points) for f in footprints]))
         order = np.argsort(minima, axis=None)[: 2 * REFINE_PAIRS]
         involved = {int(k) for flat in order for k in np.unravel_index(flat, minima.shape)}
         for i in range(len(specs)):
@@ -873,7 +908,10 @@ def fit_blocks(specs, footprints, context, fixed_colors=None, max_iter=None):
             allowance = (0.0, sweep) if twist > 0 else (sweep, 0.0)
         else:
             twist, allowance = footprint.twist, (sweep / 2, sweep / 2)
-        step = spec.step * (float(length_stretch(footprint.hue)) if footprint.twist == "warm" else 1.0)
+        # The blue length stretch is part of the automatic schedule; an explicit
+        # theme_step is used as given.
+        stretch = footprint.twist == "warm" and spec.auto_step
+        step = spec.step * (float(length_stretch(footprint.hue)) if stretch else 1.0)
         themes[i] = fit_theme_arc(
             footprint.base, spec.size, step=step, domain=context.domain, gamut=context.gamut,
             hue_allowance=allowance, twist=twist,
@@ -950,15 +988,25 @@ def palette_separation(blocks, context, fixed_colors=None):
     return result
 
 
-def _closest_pair(blocks, fixed_colors=None):
+def _closest_pair(blocks, context=None, fixed_colors=None):
+    """The block pair (or block and fixed colours) setting ``palette_separation``.
+
+    With colorblind_safe each distance is the minimum of normal and CVD-simulated
+    vision, as in :func:`palette_separation`.
+    """
+    has_fixed = fixed_colors is not None and len(fixed_colors)
+    views = [(blocks, fixed_colors if has_fixed else None)]
+    if context is not None and context.colorblind_safe:
+        views.append(([context.cvd(block) for block in blocks],
+                      context.cvd(fixed_colors) if has_fixed else None))
     best, pair = np.inf, None
     for i in range(len(blocks)):
         for j in range(i + 1, len(blocks)):
-            distance = float(discounted_distance(blocks[i], blocks[j]).min())
+            distance = min(float(discounted_distance(view[i], view[j]).min()) for view, _ in views)
             if distance < best:
                 best, pair = distance, (i, j)
-        if fixed_colors is not None and len(fixed_colors):
-            distance = float(discounted_distance(blocks[i], fixed_colors).min())
+        if has_fixed:
+            distance = min(float(discounted_distance(view[i], fixed).min()) for view, fixed in views)
             if distance < best:
                 best, pair = distance, (i, None)
     return pair
@@ -979,7 +1027,7 @@ def polish_blocks(specs, themes, context, n_iter=10, search_radius=5.0, fixed_co
     current = palette_separation(blocks, context, fixed_colors)
     accepted, refits = 0, 0
     for iteration in range(int(n_iter)):
-        pair = _closest_pair(blocks, fixed_colors)
+        pair = _closest_pair(blocks, context, fixed_colors)
         if pair is None:
             break
         best_score, best_move = current, None

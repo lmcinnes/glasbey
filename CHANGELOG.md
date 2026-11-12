@@ -35,7 +35,8 @@ perceptual arc length, and choose the blocks' base colours knowing the block siz
 
 ### New parameters
 
-All keyword-only and optional, on `create_block_palette` and `extend_block_palette`:
+All keyword-only and optional, on `create_block_palette` and `extend_block_palette`
+(`theme_step` also on `create_theme_palette`):
 
 - `theme_step` (default `None`): target CAM02-UCS distance between neighbouring
   colours in a block. `None` uses the size-dependent schedule above; a number uses

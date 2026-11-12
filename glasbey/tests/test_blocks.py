@@ -182,3 +182,17 @@ def test_bases_on_chroma_lower_bound_do_not_fall_back(lightness_bounds):
             [5] * 20, context=make_context(lightness_bounds, (30, 80)))
     assert diagnostics["fallbacks"] == 0
     assert max(theme.diagnostics["step_cv"] for theme in diagnostics["themes"]) < 0.05
+
+
+def test_closest_pair_uses_cvd_metric():
+    from glasbey._blocks import _closest_pair, palette_separation
+    from glasbey._theme import discounted_distance
+
+    context = make_context(colorblind_safe=True, cvd_severity=100.0)
+    _, diagnostics = build_block_palette([5, 3, 3, 2, 2], context=context, optimize=False)
+    blocks = [state.colors() for state in diagnostics["states"]]
+    i, j = _closest_pair(blocks, context)
+    assert (i, j) != _closest_pair(blocks)  # normal-vision choice misses the CVD bottleneck
+    pair = min(discounted_distance(blocks[i], blocks[j]).min(),
+               discounted_distance(context.cvd(blocks[i]), context.cvd(blocks[j])).min())
+    assert pair == pytest.approx(palette_separation(blocks, context))

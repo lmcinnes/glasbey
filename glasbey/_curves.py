@@ -182,8 +182,9 @@ class _Grid:
         colors = np.asarray(colors, dtype=float)
         if filter and len(colors):
             colors = colors[domain.contains(colors)]
-        grid._set(np.unique(colors, axis=0) if len(colors) else colors.reshape(0, 3), domain,
-                  _cam02ucs_to_jch(colors)[:, 1] if len(colors) else np.zeros(0))
+        # Deduplicate (np.unique also sorts) before computing chroma so the two stay aligned.
+        colors = np.unique(colors, axis=0) if len(colors) else colors.reshape(0, 3)
+        grid._set(colors, domain, _cam02ucs_to_jch(colors)[:, 1] if len(colors) else np.zeros(0))
         return grid
 
     def restricted(self, domain, extra_colors=None):

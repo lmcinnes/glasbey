@@ -539,6 +539,7 @@ def create_theme_palette(
     input_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
     output_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
     as_hex: bool = True,
+    theme_step: Optional[float] = None,
 ) -> Union[List[str], List[Tuple[float, float, float]], np.ndarray]:
     """Create a color palette with a range of colors around a central theme color. The colors lie on a smooth
     curve through the base color that varies mostly in lightness, with some variation in chroma and hue, and are
@@ -573,8 +574,8 @@ def create_theme_palette(
         CAM02-UCS colours to keep away from; the palette's position along its curve is chosen to avoid them.
 
     min_color_offset: float or None (default None)
-        Deprecated; the distance between adjacent colours is 10 in CAM02-UCS by default. If given, the
-        distance is ``60 * min_color_offset`` and a ``DeprecationWarning`` is emitted.
+        Deprecated; use ``theme_step``. If given, it maps to ``theme_step = 60 * min_color_offset`` and a
+        ``DeprecationWarning`` is emitted.
 
     input_colorspace: "RGB" or "CAM02-UCS" (default "RGB")
         The colour space of ``base_color``.
@@ -585,12 +586,17 @@ def create_theme_palette(
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
 
+    theme_step: float or None (default None)
+        Target CAM02-UCS distance between adjacent colours. ``None`` uses the size-dependent schedule of
+        :func:`create_block_palette` (about 18 for 5 colours); the step shrinks, with a warning below 4,
+        when the palette cannot fit in the bounds.
+
     Returns
     -------
     palette: List of hex-code string or array of shape (palette_size, 3)
         The resulting theme palette, ordered from dark to light.
     """
-    step = _resolve_step(None, min_color_offset, "min_color_offset")
+    step = _resolve_step(theme_step, min_color_offset, "min_color_offset")
     if palette_size == 1:
         if output_colorspace == "RGB":
             if input_colorspace == "RGB":

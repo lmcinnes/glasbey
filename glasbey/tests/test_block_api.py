@@ -110,3 +110,42 @@ def test_diagnostics_report_blocks():
     assert diagnostics["themes"][2].size == 1
     assert {"select", "fit", "polish"} <= set(diagnostics["timings"])
     assert diagnostics["separation"] > 0
+
+
+def test_theme_palette_accepts_theme_step():
+    def mean_step(palette):
+        cam = cspace_convert(np.asarray([to_rgb(c) for c in palette]), "sRGB1", "CAM02-UCS")
+        return np.linalg.norm(np.diff(cam, axis=0), axis=1).mean()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        fine = create_theme_palette("#4a7ab0", theme_step=6)
+    assert mean_step(fine) < 0.6 * mean_step(create_theme_palette("#4a7ab0"))
+    with pytest.warns(DeprecationWarning):
+        assert create_theme_palette("#4a7ab0", min_color_offset=0.1) == fine
+
+
+def test_theme_palette_color_grid_with_duplicates():
+    from glasbey._grids import rgb_grid
+
+    grid = cspace_convert(rgb_grid(12), "sRGB1", "CAM02-UCS")
+    assert len(create_theme_palette("#4a7ab0", color_grid=np.vstack([grid, grid[:50]]))) == 5
+
+
+def test_explicit_theme_step_is_not_stretched():
+    _, diagnostics = _build_block_palette_with_diagnostics([6, 6, 6, 6], theme_step=6.0)
+    assert all(theme.diagnostics["fit_step"] == 6.0 for theme in diagnostics["themes"])
+    _, auto = _build_block_palette_with_diagnostics([6, 6, 6, 6])
+    assert any(theme.diagnostics["fit_step"] > spec.step + 1e-9
+               for spec, theme in zip(auto["specs"], auto["themes"]))  # blue blocks stretch
+
+
+@pytest.mark.parametrize("hue_bounds", [(231, 231.5), (200, 215), (350, 20)])
+def test_long_blocks_in_narrow_hue_window(hue_bounds):
+    palette, diagnostics = _build_block_palette_with_diagnostics(
+        [8, 8, 8], hue_bounds=hue_bounds, as_hex=False)
+    assert len(np.unique(np.round(palette, 4), axis=0)) == len(palette)
+    low, high = hue_bounds
+    width = (high - low) % 360
+    for footprint in diagnostics["footprints"]:
+        assert (footprint.hue - low) % 360 <= width + 1e-6
