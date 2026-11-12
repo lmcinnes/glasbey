@@ -119,8 +119,12 @@ def test_theme_palette_bounds():
     rgb_palette = np.asarray([to_rgb(color) for color in palette])
     jch_palette = cspace_convert(rgb_palette, "sRGB1", "JCh")
 
-    assert 40 <= np.abs(jch_palette[0, 0] - jch_palette[4, 0]) <= 80
-    assert 0 <= np.abs(jch_palette[0, 1] - jch_palette[4, 1]) <= 60
+    # The arc method spaces colours 10 apart (CAM02-UCS) by default, so a
+    # 5-colour theme spans at least 60% of (n - 1) * step in lightness.
+    step, n = 10.0, len(palette)
+    assert np.abs(jch_palette[0, 0] - jch_palette[-1, 0]) >= 0.6 * (n - 1) * step
+    assert np.all((jch_palette[:, 0] >= 10 - 0.5) & (jch_palette[:, 0] <= 90 + 0.5))
+    assert np.all((jch_palette[:, 1] >= 10 - 0.5) & (jch_palette[:, 1] <= 90 + 0.5))
 
 
 @pytest.mark.parametrize(
@@ -184,14 +188,30 @@ def test_extend_palette_colorblind_safe(palette_to_extend):
     )
 
 
-def test_block_palette_colorblind():
-    pal = create_block_palette(
-        [4, 4, 4, 4], colorblind_safe=True, cvd_severity=100.0, as_hex=False
-    )
-    jch_pal = cspace_convert(pal, "sRGB1", "JCh")
+@pytest.mark.parametrize("cvd_severity", [50.0, 100.0])
+def test_block_palette_colorblind(cvd_severity):
+    # Under simulated colour vision deficiency, blocks must stay at least as far
+    # apart as the 0.4.0 algorithm managed (lightness-discounted CAM02-UCS distance).
+    import warnings
 
-    # Assert we haven't created any troublesome colors (tighter since we've already got a palette)
-    assert np.all((jch_pal[:, 2] < 70) | (jch_pal[:, 2] > 230))
+    from glasbey._theme import discounted_distance
+
+    sizes = [4, 4, 4, 4]
+    cvd_space = {"name": "sRGB1+CVD", "cvd_type": "deuteranomaly", "severity": cvd_severity}
+
+    def separation(palette):
+        simulated = cspace_convert(np.clip(cspace_convert(palette, cvd_space, "sRGB1"), 0, 1),
+                                   "sRGB1", "CAM02-UCS")
+        blocks = np.split(simulated, np.cumsum(sizes)[:-1])
+        return min(discounted_distance(blocks[i], blocks[j]).min()
+                   for i in range(len(blocks)) for j in range(i + 1, len(blocks)))
+
+    pal = create_block_palette(sizes, colorblind_safe=True, cvd_severity=cvd_severity, as_hex=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        legacy = create_block_palette(sizes, colorblind_safe=True, cvd_severity=cvd_severity,
+                                      as_hex=False, theme_method="legacy")
+    assert separation(np.asarray(pal)) >= separation(np.asarray(legacy))
 
 
 def test_palette_to_sRGB1_mixed_int_float_channels():

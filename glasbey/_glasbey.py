@@ -1,6 +1,8 @@
 # MIT License
 # Leland McInnes, Sergey Alexandrov
 
+import warnings
+
 import numpy as np
 
 from colorspacious import cspace_convert
@@ -10,12 +12,17 @@ from sklearn.neighbors import NearestNeighbors
 from ._grids import rgb_grid, jch_grid, constrain_by_lightness_chroma_hue
 from ._internals import (
     generate_palette_cam02ucs,
-    get_next_color,
     generate_palette_cam02ucs_and_other,
-    two_space_get_next_color,
 )
 from ._converters import get_rgb_palette, palette_to_sRGB1
-from ._optimizers import optimize_endpoint_color, optimize_existing_palette
+from ._optimizers import optimize_existing_palette
+from . import _legacy_blocks
+from ._blocks import (
+    _BlockState, blocks_to_output, build_block_palette, make_context,
+    plan_blocks,
+)
+from ._curves import _Grid
+from ._theme import fit_theme_arc
 
 from typing import *
 
@@ -460,6 +467,64 @@ def extend_palette(
         return palette
 
 
+# Maximum hue sweep (degrees) per block when colorblind_safe=True.
+COLORBLIND_MAX_SWEEP = 15.0
+
+
+def _resolve_step(theme_step, legacy_value, legacy_name):
+    """Map deprecated spacing parameters onto ``theme_step``."""
+    if legacy_value is not None:
+        warnings.warn(
+            f"{legacy_name} is deprecated and will be removed in a future release; use theme_step "
+            f"instead ({legacy_name}={legacy_value} corresponds to theme_step={60 * legacy_value:g}).",
+            DeprecationWarning, stacklevel=3,
+        )
+        if theme_step is None:
+            theme_step = 60.0 * float(legacy_value)
+    if theme_step is None:
+        return None  # size-dependent schedule
+    if not np.isscalar(theme_step) or not np.isfinite(theme_step) or theme_step <= 0:
+        raise ValueError("theme_step must be a positive finite number")
+    return float(theme_step)
+
+
+def _validate_block_options(grid_space, hue_sweep, twist, theme_method):
+    if grid_space not in ("RGB", "JCh"):
+        raise ValueError(
+            f'Parameter grid_space should be one of "JCh" or "RGB" not {grid_space}'
+        )
+    if theme_method not in ("arc", "legacy"):
+        raise ValueError('theme_method must be "arc" or "legacy"')
+    if not (isinstance(hue_sweep, str) and hue_sweep == "auto"):
+        if isinstance(hue_sweep, str) or not np.isscalar(hue_sweep) or not np.isfinite(hue_sweep) \
+                or hue_sweep < 0:
+            raise ValueError('hue_sweep must be "auto" or a non-negative number of degrees')
+    if not (isinstance(twist, str) and twist in ("warm", "auto")) and twist not in (1, -1):
+        raise ValueError('twist must be "warm", "auto", 1 or -1')
+
+
+def _validate_block_sizes(block_sizes):
+    sizes = list(block_sizes)
+    for size in sizes:
+        if isinstance(size, (bool, np.bool_)) or not isinstance(size, (int, np.integer)) or size < 1:
+            raise ValueError("block sizes must be positive integers")
+    return [int(size) for size in sizes]
+
+
+def _routing_grid_size(grid_size):
+    # The routing grid only guides curve fitting, so half the palette grid resolution is enough.
+    if isinstance(grid_size, (int, np.integer)):
+        return max(8, int(grid_size) // 2)
+    return tuple(max(8, int(size) // 2) for size in grid_size)
+
+
+def _legacy_warning():
+    warnings.warn(
+        'theme_method="legacy" reproduces the 0.4.0 block palettes and will be removed in a future '
+        "release.", FutureWarning, stacklevel=3,
+    )
+
+
 def create_theme_palette(
     base_color,
     palette_size: int = 5,
@@ -470,23 +535,31 @@ def create_theme_palette(
     chroma_bounds: Tuple[float, float] = (10.0, 90.0),
     hue_bounds: Tuple[float, float] = (0.0, 360),
     other_colors: Optional[np.ndarray] = None,
-    min_color_offset: float = 0.2,
+    min_color_offset: Optional[float] = None,
     input_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
     output_colorspace: Literal["RGB", "CAM02-UCS"] = "RGB",
     as_hex: bool = True,
+    theme_step: Optional[float] = None,
 ) -> Union[List[str], List[Tuple[float, float, float]], np.ndarray]:
-    """Create a color palette with a range of colors around a central theme color that vary smoothly in a range
-    of lightness, chroma and (to less of a degree) hue. The goal is to generate a smooth color palette that
-    provides some variation of colors while remaining relatively close to the base color. This is primarily for
-    use in the creation of block color palettes, but may be useful in its own right.
+    """Create a color palette with a range of colors around a central theme color. The colors lie on a smooth
+    curve through the base color that varies mostly in lightness, with some variation in chroma and hue, and are
+    spaced evenly by perceptual distance. This is primarily for use in the creation of block color palettes, but
+    may be useful in its own right.
 
     Parameters
     ----------
     base_color: hex str or triple of floats for RGB
-        The base color around which to build the theme palette.
+        The base color around which to build the theme palette. If it lies on the edge of the colour gamut it
+        may be moved slightly toward neutral so that a smooth curve through it is possible.
 
     palette_size: int (default 5)
         The number of colors the created palette should have.
+
+    color_grid: array or None (default None)
+        Optional CAM02-UCS colours used to guide the curve fit. A grid is built from the bounds when omitted.
+
+    color_search_index: ignored
+        Kept for backwards compatibility.
 
     lightness_bounds: (float, float) (default (10, 90))
         The upper and lower bounds of lightness values for the colors to be used in the resulting palette.
@@ -497,16 +570,33 @@ def create_theme_palette(
     hue_bounds: (float, float) (default (0, 360))
         The upper and lower bounds of hue values for the colors to be used in the resulting palette.
 
+    other_colors: array or None (default None)
+        CAM02-UCS colours to keep away from; the palette's position along its curve is chosen to avoid them.
+
+    min_color_offset: float or None (default None)
+        Deprecated; use ``theme_step``. If given, it maps to ``theme_step = 60 * min_color_offset`` and a
+        ``DeprecationWarning`` is emitted.
+
+    input_colorspace: "RGB" or "CAM02-UCS" (default "RGB")
+        The colour space of ``base_color``.
+
+    output_colorspace: "RGB" or "CAM02-UCS" (default "RGB")
+        The colour space of the returned palette.
+
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
+
+    theme_step: float or None (default None)
+        Target CAM02-UCS distance between adjacent colours. ``None`` uses the size-dependent schedule of
+        :func:`create_block_palette` (about 18 for 5 colours); the step shrinks, with a warning below 4,
+        when the palette cannot fit in the bounds.
 
     Returns
     -------
     palette: List of hex-code string or array of shape (palette_size, 3)
-        The resulting theme palette. It may not contain the base color, but should provide a smooth
-        palette over a variation of chroma and lightness with a small change in hue based around
-        the base color.
+        The resulting theme palette, ordered from dark to light.
     """
+    step = _resolve_step(theme_step, min_color_offset, "min_color_offset")
     if palette_size == 1:
         if output_colorspace == "RGB":
             if input_colorspace == "RGB":
@@ -520,113 +610,69 @@ def create_theme_palette(
                 return np.asarray(base_color).reshape(1, -1)
 
     if input_colorspace == "RGB":
-        base_color = cspace_convert(to_rgb(base_color), "sRGB1", "CAM02-UCS").astype(
-            np.float32
-        )
+        base = cspace_convert(to_rgb(base_color), "sRGB1", "CAM02-UCS")
     else:
-        base_color = np.asarray(base_color, dtype=np.float32)
+        base = np.asarray(base_color, dtype=float)
 
-    if color_grid is None:
-        color_grid = rgb_grid(
-            grid_size=64,
-            output_colorspace="JCh",
-        )
-        color_grid = constrain_by_lightness_chroma_hue(
-            color_grid,
-            "JCh",
-            lightness_bounds=lightness_bounds,
-            chroma_bounds=chroma_bounds,
-            hue_bounds=hue_bounds,
-        )
-
-    if color_search_index is None:
-        color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-            color_grid
-        )
-
-    if other_colors is None:
-        other_colors = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS")
-
-    # Specially coded offset vectors based on my aesthetic preferences
-    left_offset = np.array(
-        (
-            min(60, base_color[0] - 10),
-            -np.sign(base_color[1]) * max(0, 30 - base_color[0]) / 4.0,
-            np.sign(base_color[1]) * max(0, 30 - base_color[0]),
-        )
+    context = make_context(lightness_bounds, chroma_bounds, hue_bounds)
+    if color_grid is not None and len(color_grid) >= 8:
+        context.grid = _Grid.from_colors(context.domain, np.asarray(color_grid, dtype=float))
+    spec = plan_blocks([palette_size], context, step)[0]
+    twist = 1
+    theme = fit_theme_arc(
+        base, palette_size, step=step, domain=context.domain, gamut=context.gamut, grid=context.grid,
+        hue_allowance=(spec.demand / 2, spec.demand / 2), twist=twist, other_colors=other_colors,
     )
-    right_offset = np.array(
-        (
-            min(80, 110 - base_color[0] + max(base_color[1], 0) / 3.0),
-            np.sign(base_color[1]) * 5,
-            20,
-        )
-    )
-
-    left = color_grid[
-        np.squeeze(
-            color_search_index.kneighbors(
-                [base_color - left_offset], return_distance=False
-            )
-        )
-    ]
-    right = color_grid[
-        np.squeeze(
-            color_search_index.kneighbors(
-                [base_color + right_offset], return_distance=False
-            )
-        )
-    ]
-
-    left = optimize_endpoint_color(left, other_colors, color_grid, color_search_index, base_color - left)
-    right = optimize_endpoint_color(right, other_colors, color_grid, color_search_index, base_color - right)
-
-    left_to_mid = np.sqrt(np.sum((left - base_color) ** 2))
-    mid_to_right = np.sqrt(np.sum((right - base_color) ** 2))
-
-    xdata = np.array(
-        [-0.05, mid_to_right / (left_to_mid + mid_to_right), 1.05], dtype=np.float32
-    )
-    ydata = np.vstack([left, base_color, right])
-    polynomial = [np.polynomial.Polynomial.fit(xdata, ydata[:, i], 2) for i in range(3)]
-
-    window_width = min(min_color_offset * palette_size, 1.0)
-    expected_dist_distribution = np.linspace(
-        (1.0 - window_width) / 2.0, (1.0 + window_width) / 2.0, palette_size
-    )
-    xs = np.linspace(
-        (1.0 - window_width) / 2.0, (1.0 + window_width) / 2.0, palette_size
-    )
-
-    for anneal_val in np.linspace(1, 0, 10):
-        candidate_colors = np.asarray([p(xs) for p in polynomial]).T
-        indices = np.squeeze(
-            color_search_index.kneighbors(candidate_colors, return_distance=False)
-        )
-        candidate_colors = color_grid[indices]
-
-        dists = np.hstack(
-            [
-                [0],
-                np.sqrt(
-                    np.sum((candidate_colors[:-1] - candidate_colors[1:]) ** 2, axis=1)
-                ),
-            ]
-        )
-        dist_distribution = (window_width * np.cumsum(dists) / (dists.sum() + 1e-8)) + (
-            1.0 - window_width
-        ) / 2.0
-        errors = dist_distribution - expected_dist_distribution
-        mean_squared_error = np.sum((errors) ** 2)
-        if mean_squared_error < 0.005:
-            break
-        else:
-            xs = xs - (errors * anneal_val)
-
+    state = _BlockState(theme, theme.step * (palette_size - 1),
+                        theme.diagnostics.get("window_offset", 0.0))
     if output_colorspace == "CAM02-UCS":
-        return candidate_colors
-    else:
-        return get_rgb_palette(candidate_colors, as_hex=as_hex)
+        return state.colors()
+    return blocks_to_output([state], as_hex=as_hex)
+
+
+def _build_block_palette_with_diagnostics(
+    block_sizes,
+    *,
+    grid_size=64,
+    grid_space="RGB",
+    lightness_bounds=(10, 90),
+    chroma_bounds=(0, 80),
+    hue_bounds=(0, 360),
+    colorblind_safe=False,
+    cvd_type="deuteranomaly",
+    cvd_severity=50.0,
+    theme_step=None,
+    theme_color_spacing=None,
+    hue_sweep="auto",
+    twist="warm",
+    as_hex=True,
+    optimize_palette=True,
+    optimize_palette_n_iter=10,
+    optimize_palette_search_radius=5,
+    fixed_colors=None,
+):
+    """Build a block palette with the arc method; return (palette, diagnostics)."""
+    _validate_block_options(grid_space, hue_sweep, twist, "arc")
+    sizes = _validate_block_sizes(block_sizes)
+    step = _resolve_step(theme_step, theme_color_spacing, "theme_color_spacing")
+    if not sizes:
+        return [], {"specs": []}
+    if colorblind_safe:
+        # Hue rotation trades against CVD separation; keep blocks narrow in hue.
+        cap = COLORBLIND_MAX_SWEEP if hue_sweep == "auto" else min(float(hue_sweep), COLORBLIND_MAX_SWEEP)
+        hue_sweep = cap
+    context = make_context(
+        lightness_bounds, chroma_bounds, hue_bounds, grid_size=_routing_grid_size(grid_size),
+        grid_space=grid_space, colorblind_safe=colorblind_safe, cvd_type=cvd_type,
+        cvd_severity=cvd_severity, hue_sweep=hue_sweep,
+    )
+    colors, diagnostics = build_block_palette(
+        sizes, context=context, step=step, twist=twist, fixed_colors=fixed_colors,
+        optimize=optimize_palette, n_iter=optimize_palette_n_iter,
+        search_radius=float(optimize_palette_search_radius),
+    )
+    palette = blocks_to_output(diagnostics["states"], as_hex=as_hex)
+    return palette, diagnostics
 
 
 def create_block_palette(
@@ -640,42 +686,53 @@ def create_block_palette(
     colorblind_safe: bool = False,
     cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
     cvd_severity: float = 50.0,
-    theme_color_spacing = 0.2,
+    theme_color_spacing: Optional[float] = None,
     as_hex: bool = True,
     optimize_palette: bool = True,
     optimize_palette_n_iter: int = 10,
     optimize_palette_search_radius: int = 5,
+    theme_step: Optional[float] = None,
+    hue_sweep: Union[Literal["auto"], float] = "auto",
+    twist: Union[Literal["warm", "auto"], int] = "warm",
+    theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
-    """Create a categorical color palette in blocks using the Glasbey algorithm.
-    This should generate a palette that maximizes the perceptual distances between blocks in the palette up to the
-    constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. In turn each
-    block should be a range of colors thematically centered around a base colour. This is most useful for two
-    layer hierarchical categories, where the top layer categories each get their own block, and the finer grained
-    sub-categories get their own colour within the block.
+    """Create a categorical color palette in blocks.
+    Each block is a range of colors on a smooth curve around a base colour, ordered from dark to light and
+    spaced evenly by perceptual distance, rich through its darker colours and easing into softer tints at its
+    light end; the base colours are chosen, knowing the block sizes, to keep the
+    blocks as distinct from one another as possible within the constraints on hue, chroma and lightness. This is
+    most useful for two layer hierarchical categories, where the top layer categories each get their own block,
+    and the finer grained sub-categories get their own colour within the block.
 
     Parameters
     ----------
     block_sizes: List of ints
         The sizes of the different blocks to generate. The total palette size will be the sum of all the individual
-        block sizes.
+        block sizes. Blocks appear in the output in this order.
 
     grid_size: int or triple of int (default 64)
-        When generating a grid of colors that can be used for the platte this determines
-        the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
-        color space. A grid_size of 256 in RGB will generate all colors that can be represented in RGB. If a triple of
-        ints is given then it is the side lengths of cuboid sampling the grid color space. This can be useful if sampling
-        JCH space when you may want to sample more hues than chroma values, for example.
+        The resolution of the colour grid. Half of this resolution is used for the grid that guides curve
+        fitting. A triple of ints gives separate side lengths for the grid's three axes.
 
     grid_space: "RGB" or "JCh" (default RGB)
-        The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
-        however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
-        grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
+        The color space to sample the grids from. Sampling RGB space is the best option to ensure representable
+        colors; sampling JCh (lightness, chroma, hue) space keeps sampling density uniform with respect to
+        lightness, chroma and hue constraints.
+
+    lightness_bounds: (float, float) (default (10, 90))
+        The upper and lower bounds of CIECAM02 lightness for the colors in the resulting palette.
+
+    chroma_bounds: (float, float) (default (0, 80))
+        The upper and lower bounds of CIECAM02 chroma for the colors in the resulting palette.
+
+    hue_bounds: (float, float) (default (0, 360))
+        The upper and lower bounds of hue values for the colors in the resulting palette. Wrapped ranges such
+        as (350, 20) are supported.
 
     colorblind_safe: bool (default False)
-        If True the created palette will attempt to select colours in a way that should be more easily distinguishable
-        for individuals with color vision deficiency. In particular the palette will be selected using distance in
-        CAM02-UCS space of a color vision deficient simulation of the sampling grid, so distances will more closely
-        resemble perceptual distances of individuals with color vision deficiency.
+        If True the palette will attempt to select colours in a way that should be more easily distinguishable
+        for individuals with color vision deficiency. Block placement and block polishing then use the
+        minimum of normal and CVD-simulated separations.
 
     cvd_type: one of "protanomaly", "deuteranomaly", "tritanomaly" (default "deuteranomaly")
         The type of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The cvd_type will
@@ -692,142 +749,92 @@ def create_block_palette(
           allow any severity value to be passed, probably only severity = 100 corresponds to any real people.
 
     cvd_severity: float between 0 and 100 (default 50.0)
-        The severity of colour vision deficiency to attemnpt to be robust to if ``colorblind_safe`` is True. The
-        cvd_severity will be passed to colorspacious to similate the appropriate colour vision deficiency. Per the
+        The severity of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The
+        cvd_severity will be passed to colorspacious to simulate the appropriate colour vision deficiency. Per the
         colorspacious docs: Severity is any number between 0 (indicating regular vision) and 100 (indicating
         complete dichromacy).
 
-    theme_color_spacing: float (default 0.2)
-        The minimum distance between the base colors of the blocks in the palette. This is a value between 0 and 1
-        that represents the distance in CAM02-UCS space. A value of 0.2 is a good starting point, but this can be
-        adjusted to taste. A value of 0.0 will result in the blocks being as close together as possible, while a
-        value of 1.0 will result in the blocks being as far apart as possible.
+    theme_color_spacing: float or None (default None)
+        Deprecated; see ``theme_step``.
 
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
 
     optimize_palette: bool (default True)
-        If True the palette will be optimized to ensure that the colors are as perceptually distinct as possible.
-        This is done a greeedy optimization on the palette set to attempt to hill-climb to something better.
+        If True, polish the palette at the block level: repeatedly take the two closest blocks and try sliding
+        a block's colours along its curve, shrinking its step slightly, or (for short blocks) refitting it from
+        a nudged base colour, keeping whichever move most increases the minimum distance between blocks. The
+        order and smoothness of colours within each block are always preserved.
 
-    optimize_palette_n_iter: int (default 100)
-        The number of iterations to run the palette optimization for. This is a greedy optimization and may not
-        find the global optimum, but it should be fast and effective for small palettes.
+    optimize_palette_n_iter: int (default 10)
+        The maximum number of block-polishing rounds.
 
-    optimize_palette_search_radius: int (default 5)
-        The search radius to use for the palette optimization. This is the maximum distance in CAM02-UCS space
-        that a color can be moved to find a better color. A larger search radius will result in breaking the 
-        color blocks to make the overall palette more optimimal, smaller values will keep closer to the basic
-        block palette.
+    optimize_palette_search_radius: float (default 5)
+        The maximum distance in CAM02-UCS space that a block may slide along its curve, or that a short
+        block's base colour may be nudged, in one polishing move.
+
+    theme_step: float or None (default None)
+        Target CAM02-UCS distance between adjacent colours within a block. ``None`` picks the step from the
+        block size: small blocks get large steps (about 32 for a pair, so its two colours are clearly a dark
+        and a light version of one hue) and large blocks smaller ones (about 10 for ten colours). A float
+        uses that step for every block. If a block cannot reach its length inside the colour bounds its step
+        shrinks automatically, with a warning when it falls below 4.
+
+    theme_color_spacing: float or None (default None)
+        Deprecated; use ``theme_step``. If given, it is mapped to ``theme_step = 60 * theme_color_spacing``
+        (so the old default 0.2 corresponds to a step of 12) and a ``DeprecationWarning`` is emitted.
+
+    hue_sweep: "auto" or float (default "auto")
+        How much each block may rotate in hue from its dark end to its light end. ``"auto"`` allocates a
+        sweep per block from its size and the number of blocks, so larger blocks and palettes with fewer
+        blocks rotate more; pairs keep a single hue. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
+        rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
+        costs separation under colour vision deficiency.
+
+    twist: "warm", 1, -1 or "auto" (default "warm")
+        How blocks rotate in hue. ``"warm"`` keeps each block's dark end at its base hue and turns its light
+        end toward yellow, a warm highlight shift (reds lighten through orange, greens toward yellow-green;
+        blues, opposite yellow, mostly just pale).
+        ``1`` or ``-1`` instead rotate every block the same way around the hue circle, symmetrically about
+        its base, which packs blocks slightly more tightly; ``"auto"`` picks that shared direction to send
+        the most light ends toward yellow. Blocks of two colours never rotate.
+
+    theme_method: "arc" or "legacy" (default "arc")
+        ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block
+        base colours chosen knowing the block sizes. ``"legacy"`` runs the 0.4.0 algorithm unchanged, for
+        reproducing old palettes; it emits a ``FutureWarning`` and will be removed in a future release.
 
     Returns
     -------
     palette:
         The resulting palette with blocks of theme palette of the specified block sizes.
     """
-    palette: Union[List[str], List[Tuple[float, float, float]]] = []  # type: ignore
-    white, black = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS").astype(
-        np.float32
-    )
-    if grid_space == "JCh":
-        colors = jch_grid(
-            grid_size=grid_size,
-            lightness_bounds=lightness_bounds,  # type: ignore
-            chroma_bounds=chroma_bounds,  # type: ignore
-            hue_bounds=hue_bounds,  # type: ignore
-            output_colorspace="CAM02-UCS",
+    _validate_block_options(grid_space, hue_sweep, twist, theme_method)
+    if theme_method == "legacy":
+        _legacy_warning()
+        return _legacy_blocks.create_block_palette(
+            block_sizes, grid_size=grid_size, grid_space=grid_space,
+            lightness_bounds=lightness_bounds, chroma_bounds=chroma_bounds, hue_bounds=hue_bounds,
+            colorblind_safe=colorblind_safe, cvd_type=cvd_type, cvd_severity=cvd_severity,
+            theme_color_spacing=0.2 if theme_color_spacing is None else theme_color_spacing,
+            as_hex=as_hex, optimize_palette=optimize_palette,
+            optimize_palette_n_iter=optimize_palette_n_iter,
+            optimize_palette_search_radius=optimize_palette_search_radius,
         )
-    elif grid_space == "RGB":
-        colors = rgb_grid(
-            grid_size=grid_size,
-            output_colorspace="JCh",
+    with warnings.catch_warnings():
+        # Re-attribute deprecation warnings to the caller.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        palette, _ = _build_block_palette_with_diagnostics(
+            block_sizes, grid_size=grid_size, grid_space=grid_space,
+            lightness_bounds=lightness_bounds, chroma_bounds=chroma_bounds, hue_bounds=hue_bounds,
+            colorblind_safe=colorblind_safe, cvd_type=cvd_type, cvd_severity=cvd_severity,
+            theme_step=theme_step, theme_color_spacing=theme_color_spacing, hue_sweep=hue_sweep,
+            twist=twist, as_hex=as_hex, optimize_palette=optimize_palette,
+            optimize_palette_n_iter=optimize_palette_n_iter,
+            optimize_palette_search_radius=optimize_palette_search_radius,
         )
-        colors = constrain_by_lightness_chroma_hue(
-            colors,
-            "JCh",
-            lightness_bounds=lightness_bounds,
-            chroma_bounds=chroma_bounds,
-            hue_bounds=hue_bounds,
-        )
-    else:
-        raise ValueError(
-            f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
-        )
-
-    sub_grid = colors[(colors[:, 0] >= 40) & (colors[:, 0] <= 70)]
-    color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-        colors
-    )
-
-    if colorblind_safe:
-        cvd_space = {
-            "name": "sRGB1+CVD",
-            "cvd_type": cvd_type,
-            "severity": cvd_severity,
-        }
-        cvd_colors = cspace_convert(sub_grid, "CAM02-UCS", "sRGB1")
-        cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
-            np.float32, order="C"
-        )
-
-    distances = np.full(sub_grid.shape[0], 1e12, dtype=np.float32, order="C")
-
-    if not colorblind_safe:
-        get_next_color(distances, sub_grid, white)
-        get_next_color(distances, sub_grid, black)
-    else:
-        two_space_get_next_color(distances, sub_grid, cvd_colors, white, white, 0.0)
-        two_space_get_next_color(distances, sub_grid, cvd_colors, black, black, 0.0)
-
-    colors_to_avoid = np.vstack([black, white])
-
-    for block_size in block_sizes:
-        if not colorblind_safe:
-            base_color = get_next_color(distances, sub_grid, white)
-        else:
-            base_color, _ = two_space_get_next_color(
-                distances, sub_grid, cvd_colors, white, white, 0.0
-            )
-
-        block = create_theme_palette(
-            base_color,
-            block_size,
-            color_grid=colors,
-            color_search_index=color_search_index,
-            other_colors=colors_to_avoid,
-            input_colorspace="CAM02-UCS",
-            output_colorspace="CAM02-UCS",
-            min_color_offset=theme_color_spacing,
-        )
-        colors_to_avoid = np.vstack([colors_to_avoid, block])
-
-        for color in block:
-            if not colorblind_safe:
-                get_next_color(distances, sub_grid, color)
-            else:
-                cvd_color = cspace_convert(color, "CAM02-UCS", "sRGB1")
-                cvd_color = cspace_convert(cvd_color, cvd_space, "CAM02-UCS").astype(
-                    np.float32, order="C"
-                )
-                two_space_get_next_color(
-                    distances, sub_grid, cvd_colors, color, cvd_color, 0.0
-                )
-
-        palette.extend(block.tolist())
-
-    if optimize_palette and not colorblind_safe:
-        color_search_index = NearestNeighbors().fit(colors)
-        palette = optimize_existing_palette(
-            np.asarray(palette),
-            colors,
-            colors,
-            color_search_index,
-            n_iter=optimize_palette_n_iter,
-            search_radius=optimize_palette_search_radius,
-        )
-
-    palette = get_rgb_palette(palette, as_hex=as_hex)
-
+    if theme_color_spacing is not None:
+        _resolve_step(theme_step, theme_color_spacing, "theme_color_spacing")
     return palette
 
 
@@ -843,42 +850,52 @@ def extend_block_palette(
     colorblind_safe: bool = False,
     cvd_type: Literal["protanomaly", "deuteranomaly", "tritanomaly"] = "deuteranomaly",
     cvd_severity: float = 50.0,
-    theme_color_spacing = 0.2,
+    theme_color_spacing: Optional[float] = None,
     as_hex: bool = True,
     optimize_palette: bool = True,
     optimize_palette_n_iter: int = 5,
     optimize_palette_search_radius: int = 2,
+    theme_step: Optional[float] = None,
+    hue_sweep: Union[Literal["auto"], float] = "auto",
+    twist: Union[Literal["warm", "auto"], int] = "warm",
+    theme_method: Literal["arc", "legacy"] = "arc",
 ) -> Union[List[str], List[Tuple[float, float, float]]]:
-    """Extend an existing block color palette with new blocks using the Glasbey algorithm.
-    This should generate a palette that maximizes the perceptual distances between blocks in the palette up to the
-    constraints on hue, chroma and lightness, and the granularity of the possible colour sampling grid. In turn each
-    block should be a range of colors thematically centered around a base colour. This is most useful for two
-    layer hierarchical categories, where the top layer categories each get their own block, and the finer grained
-    sub-categories get their own colour within the block.
+    """Extend an existing palette with new blocks.
+    The existing colors are kept unchanged at the start of the palette, and new blocks are placed to be as distinct
+    as possible from them and from each other, within the constraints on hue, chroma and lightness. Each new block
+    is a range of colors on a smooth curve around a base colour, ordered from dark to light. This is most useful for
+    two layer hierarchical categories, where the top layer categories each get their own block, and the finer
+    grained sub-categories get their own colour within the block.
 
     Parameters
     ----------
-    block_sizes: List of ints
-        The sizes of the different blocks to generate. The total palette size will be the sum of all the individual
-        block sizes.
+    palette: List of hex colors or array of floats of shape (n_colors, 3), or a matplotlib palette name
+        The palette to be extended. Its colours are fixed and never move.
+
+    new_block_sizes: List of ints
+        The sizes of the new blocks to generate, in output order.
 
     grid_size: int or triple of int (default 64)
-        When generating a grid of colors that can be used for the platte this determines
-        the size of the grid. If a single int is given this determines the side length of the cube sampling the grid
-        color space. A grid_size of 256 in RGB will generate all colors that can be represented in RGB. If a triple of
-        ints is given then it is the side lengths of cuboid sampling the grid color space. This can be useful if sampling
-        JCH space when you may want to sample more hues than chroma values, for example.
+        The resolution of the colour grid. Half of this resolution is used for the grid that guides curve
+        fitting. A triple of ints gives separate side lengths for the grid's three axes.
 
     grid_space: "RGB" or "JCh" (default RGB)
-        The color space to sample the grid from. Sampling RGB space is the best option to ensure representable colors,
-        however it can be useful to sample JCh (lightness, chroma, hue) space instead if you want to use a smaller
-        grid size, but what to maintain sampling density with respect to lightness, chroma or hue constraints.
+        The color space to sample the grids from.
+
+    lightness_bounds: (float, float) or None (default (10, 90))
+        The upper and lower bounds of CIECAM02 lightness for new colors. If None, and the palette has at least
+        four colors, the bounds are inferred from the existing palette.
+
+    chroma_bounds: (float, float) or None (default (0, 80))
+        The upper and lower bounds of CIECAM02 chroma for new colors, inferred as for lightness when None.
+
+    hue_bounds: (float, float) or None (default (0, 360))
+        The upper and lower bounds of hue values for new colors, inferred as for lightness when None.
 
     colorblind_safe: bool (default False)
-        If True the created palette will attempt to select colours in a way that should be more easily distinguishable
-        for individuals with color vision deficiency. In particular the palette will be selected using distance in
-        CAM02-UCS space of a color vision deficient simulation of the sampling grid, so distances will more closely
-        resemble perceptual distances of individuals with color vision deficiency.
+        If True the palette will attempt to select colours in a way that should be more easily distinguishable
+        for individuals with color vision deficiency. Block placement and block polishing then use the
+        minimum of normal and CVD-simulated separations.
 
     cvd_type: one of "protanomaly", "deuteranomaly", "tritanomaly" (default "deuteranomaly")
         The type of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The cvd_type will
@@ -895,46 +912,84 @@ def extend_block_palette(
           allow any severity value to be passed, probably only severity = 100 corresponds to any real people.
 
     cvd_severity: float between 0 and 100 (default 50.0)
-        The severity of colour vision deficiency to attemnpt to be robust to if ``colorblind_safe`` is True. The
-        cvd_severity will be passed to colorspacious to similate the appropriate colour vision deficiency. Per the
+        The severity of colour vision deficiency to attempt to be robust to if ``colorblind_safe`` is True. The
+        cvd_severity will be passed to colorspacious to simulate the appropriate colour vision deficiency. Per the
         colorspacious docs: Severity is any number between 0 (indicating regular vision) and 100 (indicating
         complete dichromacy).
 
-    theme_color_spacing: float (default 0.2)
-        The minimum distance between the base colors of the blocks in the palette. This is a value between 0 and 1
-        that represents the distance in CAM02-UCS space. A value of 0.2 is a good starting point, but this can be
-        adjusted to taste. A value of 0.0 will result in the blocks being as close together as possible, while a
-        value of 1.0 will result in the blocks being as far apart as possible.
+    theme_color_spacing: float or None (default None)
+        Deprecated; see ``theme_step``.
 
     as_hex: bool (default True)
         Whether to return the palette as hex-codes or RGB float triples.
 
     optimize_palette: bool (default True)
-        If True the palette will be optimized to ensure that the colors are as perceptually distinct as possible.
-        This is done a greeedy optimization on the palette set to attempt to hill-climb to something better.
+        If True, polish the palette at the block level: repeatedly take the two closest blocks and try sliding
+        a block's colours along its curve, shrinking its step slightly, or (for short blocks) refitting it from
+        a nudged base colour, keeping whichever move most increases the minimum distance between blocks. The
+        order and smoothness of colours within each block are always preserved.
 
-    optimize_palette_n_iter: int (default 30)
-        The number of iterations to run the palette optimization for. This is a greedy optimization and may not
-        find the global optimum, but it should be fast and effective for small palettes.
+    optimize_palette_n_iter: int (default 5)
+        The maximum number of block-polishing rounds.
 
-    optimize_palette_search_radius: int (default 3)
-        The search radius to use for the palette optimization. This is the maximum distance in CAM02-UCS space
-        that a color can be moved to find a better color. A larger search radius will result in breaking the 
-        color blocks to make the overall palette more optimimal, smaller values will keep closer to the basic
-        block palette.
+    optimize_palette_search_radius: float (default 2)
+        The maximum distance in CAM02-UCS space that a block may slide along its curve, or that a short
+        block's base colour may be nudged, in one polishing move.
+
+    theme_step: float or None (default None)
+        Target CAM02-UCS distance between adjacent colours within a block. ``None`` picks the step from the
+        block size: small blocks get large steps (about 32 for a pair, so its two colours are clearly a dark
+        and a light version of one hue) and large blocks smaller ones (about 10 for ten colours). A float
+        uses that step for every block. If a block cannot reach its length inside the colour bounds its step
+        shrinks automatically, with a warning when it falls below 4.
+
+    theme_color_spacing: float or None (default None)
+        Deprecated; use ``theme_step``. If given, it is mapped to ``theme_step = 60 * theme_color_spacing``
+        (so the old default 0.2 corresponds to a step of 12) and a ``DeprecationWarning`` is emitted.
+
+    hue_sweep: "auto" or float (default "auto")
+        How much each block may rotate in hue from its dark end to its light end. ``"auto"`` allocates a
+        sweep per block from its size and the number of blocks, so larger blocks and palettes with fewer
+        blocks rotate more; pairs keep a single hue. A float is the maximum total sweep in degrees for any block; ``0`` disables hue
+        rotation. With ``colorblind_safe=True`` the sweep is capped at 15 degrees, since hue rotation
+        costs separation under colour vision deficiency.
+
+    twist: "warm", 1, -1 or "auto" (default "warm")
+        How blocks rotate in hue. ``"warm"`` keeps each block's dark end at its base hue and turns its light
+        end toward yellow, a warm highlight shift (reds lighten through orange, greens toward yellow-green;
+        blues, opposite yellow, mostly just pale).
+        ``1`` or ``-1`` instead rotate every block the same way around the hue circle, symmetrically about
+        its base, which packs blocks slightly more tightly; ``"auto"`` picks that shared direction to send
+        the most light ends toward yellow. Blocks of two colours never rotate.
+
+    theme_method: "arc" or "legacy" (default "arc")
+        ``"arc"`` builds each block as a smooth curve sampled evenly by perceptual arc length, with block
+        base colours chosen knowing the block sizes. ``"legacy"`` runs the 0.4.0 algorithm unchanged, for
+        reproducing old palettes; it emits a ``FutureWarning`` and will be removed in a future release.
 
     Returns
     -------
     palette:
-        The resulting palette with blocks of theme palette of the specified block sizes.
+        The existing palette followed by the new blocks.
     """
+    _validate_block_options(grid_space, hue_sweep, twist, theme_method)
+    if theme_method == "legacy":
+        _legacy_warning()
+        return _legacy_blocks.extend_block_palette(
+            palette, new_block_sizes, grid_size=grid_size, grid_space=grid_space,
+            lightness_bounds=lightness_bounds, chroma_bounds=chroma_bounds, hue_bounds=hue_bounds,
+            colorblind_safe=colorblind_safe, cvd_type=cvd_type, cvd_severity=cvd_severity,
+            theme_color_spacing=0.2 if theme_color_spacing is None else theme_color_spacing,
+            as_hex=as_hex, optimize_palette=optimize_palette,
+            optimize_palette_n_iter=optimize_palette_n_iter,
+            optimize_palette_search_radius=optimize_palette_search_radius,
+        )
     try:
         palette = palette_to_sRGB1(palette, max_colors=20)
-    except:
+    except Exception:
         raise ValueError(
             "Failed to parse the palette to be extended. Is it formatted correctly?"
         )
-    initial_palette_size = len(palette)
 
     if any(param is None for param in (lightness_bounds, chroma_bounds, hue_bounds)):
         jch_palette = cspace_convert(palette, "sRGB1", "JCh")
@@ -957,118 +1012,20 @@ def extend_block_palette(
             else:
                 hue_bounds = (0, 360)
 
-    white, black = cspace_convert([[1, 1, 1], [0, 0, 0]], "sRGB1", "CAM02-UCS").astype(
-        np.float32
-    )
-    cam_palette = cspace_convert(palette, "sRGB1", "CAM02-UCS").astype(
-        np.float32, order="C"
-    )
-    result_palette = [x for x in cam_palette]
-
-    if grid_space == "JCh":
-        colors = jch_grid(
-            grid_size=grid_size,
-            lightness_bounds=lightness_bounds,  # type: ignore
-            chroma_bounds=chroma_bounds,  # type: ignore
-            hue_bounds=hue_bounds,  # type: ignore
-            output_colorspace="CAM02-UCS",
+    cam_palette = cspace_convert(palette, "sRGB1", "CAM02-UCS")
+    existing = get_rgb_palette(cam_palette, as_hex=as_hex)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        new_blocks, _ = _build_block_palette_with_diagnostics(
+            new_block_sizes, grid_size=grid_size, grid_space=grid_space,
+            lightness_bounds=lightness_bounds, chroma_bounds=chroma_bounds, hue_bounds=hue_bounds,
+            colorblind_safe=colorblind_safe, cvd_type=cvd_type, cvd_severity=cvd_severity,
+            theme_step=theme_step, theme_color_spacing=theme_color_spacing, hue_sweep=hue_sweep,
+            twist=twist, as_hex=as_hex, optimize_palette=optimize_palette,
+            optimize_palette_n_iter=optimize_palette_n_iter,
+            optimize_palette_search_radius=optimize_palette_search_radius,
+            fixed_colors=cam_palette,
         )
-    elif grid_space == "RGB":
-        colors = rgb_grid(
-            grid_size=grid_size,
-            output_colorspace="JCh",
-        )
-        colors = constrain_by_lightness_chroma_hue(
-            colors,
-            "JCh",
-            lightness_bounds=lightness_bounds,
-            chroma_bounds=chroma_bounds,
-            hue_bounds=hue_bounds,
-        )
-    else:
-        raise ValueError(
-            f'Parameter grid_space should be on of "JCh" or "RGB" not {grid_space}'
-        )
-
-    sub_grid = colors[(colors[:, 0] >= 40) & (colors[:, 0] <= 70)]
-    color_search_index = NearestNeighbors(n_neighbors=1, algorithm="kd_tree").fit(
-        colors
-    )
-
-    if colorblind_safe:
-        cvd_space = {
-            "name": "sRGB1+CVD",
-            "cvd_type": cvd_type,
-            "severity": cvd_severity,
-        }
-        cvd_colors = cspace_convert(sub_grid, "CAM02-UCS", "sRGB1")
-        cvd_colors = cspace_convert(cvd_colors, cvd_space, "CAM02-UCS").astype(
-            np.float32, order="C"
-        )
-
-    distances = np.full(sub_grid.shape[0], 1e12, dtype=np.float32, order="C")
-
-    if not colorblind_safe:
-        get_next_color(distances, sub_grid, white)
-        get_next_color(distances, sub_grid, black)
-        for color in cam_palette:
-            get_next_color(distances, sub_grid, color)
-    else:
-        two_space_get_next_color(distances, sub_grid, cvd_colors, white, white, 0.0)
-        two_space_get_next_color(distances, sub_grid, cvd_colors, black, black, 0.0)
-        for color in cam_palette:
-            two_space_get_next_color(
-                distances, sub_grid, cvd_colors, color, color, 0.0
-            )
-
-    colors_to_avoid = np.vstack([black, white, cam_palette])
-
-    for block_size in new_block_sizes:
-        if not colorblind_safe:
-            base_color = get_next_color(distances, sub_grid, white)
-        else:
-            base_color, _ = two_space_get_next_color(
-                distances, sub_grid, cvd_colors, white, white, 0.0
-            )
-
-        block = create_theme_palette(
-            base_color,
-            block_size,
-            color_grid=colors,
-            color_search_index=color_search_index,
-            other_colors=colors_to_avoid,
-            input_colorspace="CAM02-UCS",
-            output_colorspace="CAM02-UCS",
-            min_color_offset=theme_color_spacing,
-        )
-        colors_to_avoid = np.vstack([colors_to_avoid, block])
-
-        for color in block:
-            if not colorblind_safe:
-                get_next_color(distances, sub_grid, color)
-            else:
-                cvd_color = cspace_convert(color, "CAM02-UCS", "sRGB1")
-                cvd_color = cspace_convert(cvd_color, cvd_space, "CAM02-UCS").astype(
-                    np.float32, order="C"
-                )
-                two_space_get_next_color(
-                    distances, sub_grid, cvd_colors, color, cvd_color, 0.0
-                )
-
-        result_palette.extend(block.tolist())
-
-    if optimize_palette and not colorblind_safe:
-        color_search_index = NearestNeighbors().fit(colors)
-        result_palette = optimize_existing_palette(
-            np.asarray(result_palette),
-            colors,
-            colors,
-            color_search_index,
-            movable_colors=list(range(initial_palette_size, len(result_palette))),
-            n_iter=optimize_palette_n_iter,
-            search_radius=optimize_palette_search_radius,
-        )
-
-    result_palette = get_rgb_palette(result_palette, as_hex=as_hex)
-
-    return result_palette
+    if theme_color_spacing is not None:
+        _resolve_step(theme_step, theme_color_spacing, "theme_color_spacing")
+    return list(existing) + list(new_blocks)

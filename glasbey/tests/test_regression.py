@@ -1,0 +1,75 @@
+"""Regression tests pinning outputs that must not change.
+
+Fixtures were generated from glasbey 0.4.0 (``create_colormap`` and the block
+palette functions now kept in ``glasbey/_legacy_blocks.py``).
+"""
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import glasbey
+
+FIXTURES = Path(__file__).parent / "fixtures"
+COLORMAP_CASES = {
+    "sequential": dict(seed_colors=["#bdd8e8", "#324555", "#64809b"], grid_size=12, max_iter=80),
+    "diverging": dict(seed_colors=["#4a6fa5", "#efefef", "#b5603a"], mode="diverging",
+                      grid_size=12, max_iter=80),
+    "grey_vibrant": dict(seed_colors=["#333333", "#dddddd"], grid_size=12, arc_length_factor=1.3,
+                         smoothness=3, chroma_weight=5, max_iter=80),
+}
+
+
+@pytest.fixture(scope="module")
+def colormap_expected():
+    return json.loads((FIXTURES / "colormap_regression.json").read_text())
+
+
+@pytest.mark.parametrize("name", sorted(COLORMAP_CASES))
+def test_create_colormap_unchanged(name, colormap_expected):
+    sampled = glasbey.create_colormap(**COLORMAP_CASES[name]).sample(17)[1]
+    # Bit-identical on the generating platform. Other numpy/scipy/BLAS builds move the
+    # SLSQP solution by ~1e-6 (main shows the same drift), so allow well under one
+    # 8-bit RGB level (1/255 ~ 4e-3).
+    np.testing.assert_allclose(sampled, colormap_expected[name], rtol=0, atol=1e-4)
+
+
+LEGACY_BLOCK_CASES = {
+    "default_mixed": dict(block_sizes=[5, 5, 3, 2, 2, 1]),
+    "jch_grid": dict(block_sizes=[1, 5, 3, 4, 2], grid_space="JCh"),
+    "tight_no_opt": dict(block_sizes=[4, 4, 3], lightness_bounds=(40, 70), optimize_palette=False),
+    "colorblind": dict(block_sizes=[4, 4, 4, 4], colorblind_safe=True, cvd_severity=100.0),
+}
+LEGACY_EXTEND_CASES = {"extend_tab10": dict(palette="tab10", new_block_sizes=[3, 2])}
+LEGACY_THEME_CASES = {
+    "theme_default": dict(base_color="#4a7ab0", palette_size=5),
+    "theme_seven": dict(base_color="#b05a4a", palette_size=7),
+}
+
+
+@pytest.fixture(scope="module")
+def legacy_expected():
+    return json.loads((FIXTURES / "legacy_blocks_0_4_0.json").read_text())
+
+
+@pytest.mark.parametrize("name", sorted(LEGACY_BLOCK_CASES))
+def test_legacy_block_palette_reproduces_0_4_0(name, legacy_expected):
+    with pytest.warns(FutureWarning):
+        palette = glasbey.create_block_palette(**LEGACY_BLOCK_CASES[name], theme_method="legacy")
+    assert palette == legacy_expected[name]
+
+
+@pytest.mark.parametrize("name", sorted(LEGACY_EXTEND_CASES))
+def test_legacy_extend_block_palette_reproduces_0_4_0(name, legacy_expected):
+    with pytest.warns(FutureWarning):
+        palette = glasbey.extend_block_palette(**LEGACY_EXTEND_CASES[name], theme_method="legacy")
+    assert palette == legacy_expected[name]
+
+
+@pytest.mark.parametrize("name", sorted(LEGACY_THEME_CASES))
+def test_legacy_theme_palette_reproduces_0_4_0(name, legacy_expected):
+    from glasbey import _legacy_blocks
+
+    assert list(_legacy_blocks.create_theme_palette(**LEGACY_THEME_CASES[name])) == legacy_expected[name]
